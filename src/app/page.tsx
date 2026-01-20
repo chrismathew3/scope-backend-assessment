@@ -67,6 +67,7 @@ export default function Home() {
       setIsPreviewOpen(false);
       setCsvContent("");
       await utils.showtime.getAll.invalidate();
+      await utils.showtime.getFilterOptions.invalidate();
     },
     onError: (error) => {
       alert(`Error applying changes: ${error.message}`);
@@ -77,6 +78,7 @@ export default function Home() {
   const clearMutation = api.showtime.clearSchedule.useMutation({
     onSuccess: async () => {
       await utils.showtime.getAll.invalidate();
+      await utils.showtime.getFilterOptions.invalidate();
     },
     onError: (error) => {
       alert(`Error clearing schedule: ${error.message}`);
@@ -192,10 +194,10 @@ export default function Home() {
             startDate={filters.startDate}
             endDate={filters.endDate}
             onFilterChange={setFilters}
-            availableFormats={filterOptions.formats}
-            availableLanguages={filterOptions.languages}
-            availableRatings={filterOptions.ratings}
-            availableAuditoriums={filterOptions.auditoriums}
+            availableFormats={filterOptions.formats ?? []}
+            availableLanguages={filterOptions.languages ?? []}
+            availableRatings={filterOptions.ratings ?? []}
+            availableAuditoriums={filterOptions.auditoriums ?? []}
           />
         )}
 
