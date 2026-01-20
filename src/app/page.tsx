@@ -1,53 +1,229 @@
-import Link from "next/link";
+"use client";
 
-import { LatestPost } from "~/app/_components/post";
-import { api, HydrateClient } from "~/trpc/server";
+import { useState, useEffect } from "react";
+import { useSession, signOut } from "next-auth/react";
+import { useRouter } from "next/navigation";
+import { api } from "~/trpc/react";
+import { ShowtimesTable } from "./_components/ShowtimesTable";
+import { PreviewModal } from "./_components/PreviewModal";
+import { FileUpload } from "./_components/FileUpload";
+import { FilterBar } from "./_components/FilterBar";
+import type { PreviewChanges } from "~/server/api/routers/showtime";
 
-export default async function Home() {
-  const hello = await api.post.hello({ text: "from tRPC" });
+export default function Home() {
+  const { data: session, status } = useSession();
+  const router = useRouter();
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [csvContent, setCsvContent] = useState<string>("");
+  const [previewData, setPreviewData] = useState<PreviewChanges>({
+    adds: [],
+    updates: [],
+    archives: [],
+  });
 
-  void api.post.getLatest.prefetch();
+  // Filter state
+  const [filters, setFilters] = useState({
+    status: "all" as "active" | "archived" | "all",
+    format: "",
+    language: "",
+    rating: "",
+    auditorium: "",
+    startDate: "",
+    endDate: "",
+  });
+
+  const utils = api.useUtils();
+
+  // Fetch filter options
+  const { data: filterOptions } = api.showtime.getFilterOptions.useQuery();
+
+  // Fetch all showtimes with filters
+  const { data: showtimes, isLoading } = api.showtime.getAll.useQuery({
+    status: filters.status,
+    sortBy: "startTime",
+    sortOrder: "asc",
+    format: filters.format,
+    language: filters.language,
+    rating: filters.rating,
+    auditorium: filters.auditorium,
+    startDate: filters.startDate,
+    endDate: filters.endDate,
+  });
+
+  // Preview changes mutation
+  const previewMutation = api.showtime.previewChanges.useMutation({
+    onSuccess: (data) => {
+      setPreviewData(data);
+      setIsPreviewOpen(true);
+    },
+    onError: (error) => {
+      alert(`Error previewing changes: ${error.message}`);
+    },
+  });
+
+  // Apply changes mutation
+  const applyMutation = api.showtime.applyChanges.useMutation({
+    onSuccess: async () => {
+      setIsPreviewOpen(false);
+      setCsvContent("");
+      await utils.showtime.getAll.invalidate();
+      await utils.showtime.getFilterOptions.invalidate();
+    },
+    onError: (error) => {
+      alert(`Error applying changes: ${error.message}`);
+    },
+  });
+
+  // Clear schedule mutation
+  const clearMutation = api.showtime.clearSchedule.useMutation({
+    onSuccess: async () => {
+      await utils.showtime.getAll.invalidate();
+      await utils.showtime.getFilterOptions.invalidate();
+    },
+    onError: (error) => {
+      alert(`Error clearing schedule: ${error.message}`);
+    },
+  });
+
+  const handleFileSelect = (content: string) => {
+    setCsvContent(content);
+    previewMutation.mutate({ csvContent: content });
+  };
+
+  const handleConfirmChanges = () => {
+    if (csvContent) {
+      applyMutation.mutate({ csvContent });
+    }
+  };
+
+  const handleClearSchedule = () => {
+    if (
+      confirm(
+        "Are you sure you want to archive all active showtimes? This action cannot be undone.",
+      )
+    ) {
+      clearMutation.mutate();
+    }
+  };
+
+  const handleSignOut = async () => {
+    await signOut({ callbackUrl: "/login" });
+  };
+
+  // Redirect to login if not authenticated
+  useEffect(() => {
+    if (status === "unauthenticated") {
+      router.push("/login");
+    }
+  }, [status, router]);
+
+  // Show loading state while checking authentication
+  if (status === "loading") {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-gradient-to-b from-[#1a0b2e] to-[#0f0720]">
+        <div className="text-gray-400">Loading...</div>
+      </div>
+    );
+  }
+
+  // Don't render if not authenticated
+  if (!session) {
+    return null;
+  }
 
   return (
-    <HydrateClient>
-      <main className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-b from-[#2e026d] to-[#15162c] text-white">
-        <div className="container flex flex-col items-center justify-center gap-12 px-4 py-16">
-          <h1 className="text-5xl font-extrabold tracking-tight sm:text-[5rem]">
-            Create <span className="text-[hsl(280,100%,70%)]">T3</span> App
-          </h1>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:gap-8">
-            <Link
-              className="flex max-w-xs flex-col gap-4 rounded-xl bg-white/10 p-4 hover:bg-white/20"
-              href="https://create.t3.gg/en/usage/first-steps"
-              target="_blank"
-            >
-              <h3 className="text-2xl font-bold">First Steps →</h3>
-              <div className="text-lg">
-                Just the basics - Everything you need to know to set up your
-                database and authentication.
-              </div>
-            </Link>
-            <Link
-              className="flex max-w-xs flex-col gap-4 rounded-xl bg-white/10 p-4 hover:bg-white/20"
-              href="https://create.t3.gg/en/introduction"
-              target="_blank"
-            >
-              <h3 className="text-2xl font-bold">Documentation →</h3>
-              <div className="text-lg">
-                Learn more about Create T3 App, the libraries it uses, and how
-                to deploy it.
-              </div>
-            </Link>
-          </div>
-          <div className="flex flex-col items-center gap-2">
-            <p className="text-2xl text-white">
-              {hello ? hello.greeting : "Loading tRPC query..."}
+    <main className="min-h-screen bg-gradient-to-b from-[#1a0b2e] to-[#0f0720]">
+      <div className="container mx-auto px-4 py-8">
+        {/* Header */}
+        <div className="mb-8 flex items-start justify-between">
+          <div>
+            <h1 className="mb-2 text-4xl font-bold text-white">
+              Theater Showtimes Manager
+            </h1>
+            <p className="text-gray-400">
+              Upload partner CSV files to manage showtimes
             </p>
           </div>
-
-          <LatestPost />
+          <div className="flex items-center gap-4">
+            <div className="text-right">
+              <p className="text-sm text-gray-400">Signed in as</p>
+              <p className="font-medium text-white">{session.user.email}</p>
+            </div>
+            <button
+              onClick={handleSignOut}
+              className="rounded-lg border border-gray-600 px-4 py-2 text-sm font-medium text-gray-300 transition hover:bg-gray-800"
+            >
+              Sign Out
+            </button>
+          </div>
         </div>
-      </main>
-    </HydrateClient>
+
+        {/* Actions Bar */}
+        <div className="mb-6 flex flex-wrap items-center gap-4">
+          <FileUpload
+            onFileSelect={handleFileSelect}
+            disabled={previewMutation.isPending}
+          />
+
+          <button
+            onClick={handleClearSchedule}
+            disabled={clearMutation.isPending || !showtimes?.length}
+            className="rounded-lg border border-red-600 px-6 py-3 font-semibold text-red-400 transition hover:bg-red-950 disabled:opacity-50"
+          >
+            {clearMutation.isPending ? "Clearing..." : "Clear Schedule"}
+          </button>
+
+          <div className="ml-auto text-sm text-gray-400">
+            {showtimes && (
+              <>
+                {showtimes.filter((st: { status: string }) => st.status === "active").length} active
+                showtimes
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Filter Bar */}
+        {filterOptions && (
+          <FilterBar
+            status={filters.status}
+            format={filters.format}
+            language={filters.language}
+            rating={filters.rating}
+            auditorium={filters.auditorium}
+            startDate={filters.startDate}
+            endDate={filters.endDate}
+            onFilterChange={setFilters}
+            availableFormats={filterOptions.formats ?? []}
+            availableLanguages={filterOptions.languages ?? []}
+            availableRatings={filterOptions.ratings ?? []}
+            availableAuditoriums={filterOptions.auditoriums ?? []}
+          />
+        )}
+
+        {/* Loading State */}
+        {isLoading && (
+          <div className="rounded-lg border border-gray-700 bg-gray-900 p-8 text-center text-gray-400">
+            Loading showtimes...
+          </div>
+        )}
+
+        {/* Showtimes Table */}
+        {!isLoading && showtimes && (
+          <div className="rounded-lg border border-gray-700 bg-gray-900 p-6">
+            <ShowtimesTable showtimes={showtimes} />
+          </div>
+        )}
+
+        {/* Preview Modal */}
+        <PreviewModal
+          isOpen={isPreviewOpen}
+          onClose={() => setIsPreviewOpen(false)}
+          onConfirm={handleConfirmChanges}
+          changes={previewData}
+          isApplying={applyMutation.isPending}
+        />
+      </div>
+    </main>
   );
 }
