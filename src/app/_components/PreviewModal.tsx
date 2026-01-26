@@ -5,7 +5,7 @@ import type {
   ShowtimeAdd,
   ShowtimeUpdate,
   ShowtimeArchive,
-} from "~/server/api/routers/showtime";
+} from "~/types/assessment";
 
 interface PreviewModalProps {
   isOpen: boolean;
@@ -197,4 +197,3 @@ export function PreviewModal({
     </div>
   );
 }
-

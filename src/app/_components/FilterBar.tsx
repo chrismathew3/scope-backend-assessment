@@ -1,19 +1,21 @@
 "use client";
 
 interface FilterBarProps {
-  status: "active" | "archived" | "all";
+  status: "active" | "inactive" | "archived" | "all";
   format: string;
   language: string;
   rating: string;
   auditorium: string;
+  movieStatus: string;
   startDate: string;
   endDate: string;
   onFilterChange: (filters: {
-    status: "active" | "archived" | "all";
+    status: "active" | "inactive" | "archived" | "all";
     format: string;
     language: string;
     rating: string;
     auditorium: string;
+    movieStatus: string;
     startDate: string;
     endDate: string;
   }) => void;
@@ -21,6 +23,7 @@ interface FilterBarProps {
   availableLanguages: string[];
   availableRatings: string[];
   availableAuditoriums: string[];
+  availableMovieStatuses: string[];
 }
 
 export function FilterBar({
@@ -29,6 +32,7 @@ export function FilterBar({
   language,
   rating,
   auditorium,
+  movieStatus,
   startDate,
   endDate,
   onFilterChange,
@@ -36,6 +40,7 @@ export function FilterBar({
   availableLanguages,
   availableRatings,
   availableAuditoriums,
+  availableMovieStatuses,
 }: FilterBarProps) {
   const handleChange = (field: string, value: string) => {
     onFilterChange({
@@ -44,6 +49,7 @@ export function FilterBar({
       language,
       rating,
       auditorium,
+      movieStatus,
       startDate,
       endDate,
       [field]: value,
@@ -62,12 +68,16 @@ export function FilterBar({
           <select
             value={status}
             onChange={(e) =>
-              handleChange("status", e.target.value as "active" | "archived" | "all")
+              handleChange(
+                "status",
+                e.target.value as "active" | "inactive" | "archived" | "all",
+              )
             }
             className="w-full rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
           >
             <option value="all">All</option>
             <option value="active">Active</option>
+            <option value="inactive">Inactive</option>
             <option value="archived">Archived</option>
           </select>
         </div>
@@ -123,6 +133,25 @@ export function FilterBar({
           </select>
         </div>
 
+        {/* Movie Status Filter */}
+        <div>
+          <label className="mb-1 block text-xs text-gray-400">
+            Movie Status
+          </label>
+          <select
+            value={movieStatus}
+            onChange={(e) => handleChange("movieStatus", e.target.value)}
+            className="w-full rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-white focus:border-purple-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+          >
+            <option value="">All Statuses</option>
+            {availableMovieStatuses.map((statusOption) => (
+              <option key={statusOption} value={statusOption}>
+                {statusOption}
+              </option>
+            ))}
+          </select>
+        </div>
+
         {/* Auditorium Filter */}
         <div>
           <label className="mb-1 block text-xs text-gray-400">Auditorium</label>
@@ -172,6 +201,7 @@ export function FilterBar({
                 language: "",
                 rating: "",
                 auditorium: "",
+                movieStatus: "",
                 startDate: "",
                 endDate: "",
               })
@@ -185,4 +215,3 @@ export function FilterBar({
     </div>
   );
 }
-
