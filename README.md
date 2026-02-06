@@ -28,6 +28,22 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+## FastAPI Scaffold
+
+A minimal FastAPI app lives in `backend/app/main.py`.
+
+Run it locally:
+
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+```
+
+Then visit `http://localhost:8000/health`.
+
 ## What’s in the Frontend
 
 - Static data lives in `src/data/assessment-data.ts`.
