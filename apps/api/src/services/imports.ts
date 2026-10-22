@@ -96,6 +96,9 @@ async function loadExisting(tx: Tx, theaterId: string, startTimes: Date[]): Prom
   return [...live, ...archived];
 }
 
+const IMPORT_LIMIT = 30;
+const IMPORT_WINDOW_MIN = 10;
+
 export async function createImport(
   ctx: AuthedContext,
   input: { theaterId: string; filename: string; contentBase64: string },
@@ -103,6 +106,18 @@ export async function createImport(
   const { tx } = ctx;
   const [theater] = await tx.select().from(theaters).where(eq(theaters.id, input.theaterId));
   if (!theater) throw new TRPCError({ code: "NOT_FOUND", message: "Theater not found" });
+
+  // Every upload runs the model, which costs money: cap each account's pace.
+  const [recent] = await tx
+    .select({ n: sql<number>`count(*)::int` })
+    .from(imports)
+    .where(and(eq(imports.uploadedBy, ctx.user.id), sql`${imports.createdAt} > now() - make_interval(mins => ${IMPORT_WINDOW_MIN})`));
+  if ((recent?.n ?? 0) >= IMPORT_LIMIT) {
+    throw new TRPCError({
+      code: "TOO_MANY_REQUESTS",
+      message: `You've uploaded ${IMPORT_LIMIT} files in the last ${IMPORT_WINDOW_MIN} minutes. Try again in a few minutes.`,
+    });
+  }
 
   const bytes = new Uint8Array(Buffer.from(input.contentBase64, "base64"));
   let parsed;

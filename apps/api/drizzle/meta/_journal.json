@@ -50,6 +50,20 @@
       "when": 1792710020417,
       "tag": "0006_demo_reset_users",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1792711347804,
+      "tag": "0007_title_catalog",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792711739177,
+      "tag": "0008_demo_reset_audit",
+      "breakpoints": true
     }
   ]
 }

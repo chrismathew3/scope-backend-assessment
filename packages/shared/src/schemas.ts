@@ -156,14 +156,64 @@ export const ShowtimeFacets = z.object({
   canSeeInternal: z.boolean(),
 });
 
+const requiredText = (label: string, max: number) =>
+  z.string().trim().min(1, `${label} is required`).max(max, `${label} is longer than ${max} characters`);
+
+/** Fields an admin can write on a showtime. Times are ISO 8601 with an offset (or Z). */
+export const showtimeFields = {
+  movieTitle: requiredText("Title", 200),
+  auditorium: requiredText("Auditorium", 100),
+  startTime: isoDate,
+  endTime: isoDate,
+  language: requiredText("Language", 40),
+  format: requiredText("Format", 40),
+  rating: requiredText("Rating", 20),
+};
+
+export const END_BEFORE_START = "End time must be after start time";
+/** True unless both times are given and the end isn't after the start. */
+export const endsAfterStart = (v: { startTime?: string; endTime?: string }) =>
+  !v.startTime || !v.endTime || new Date(v.endTime).getTime() > new Date(v.startTime).getTime();
+
+export const ShowtimeCreateInput = z
+  .object({
+    theaterId: id,
+    ...showtimeFields,
+    movieStatus: MovieStatus.default("needs-review"),
+    status: ShowtimeStatus.default("active"),
+  })
+  .refine(endsAfterStart, { message: END_BEFORE_START, path: ["endTime"] });
+export type ShowtimeCreateInput = z.input<typeof ShowtimeCreateInput>;
+
+const EDITABLE_KEYS = [
+  "movieTitle",
+  "auditorium",
+  "startTime",
+  "endTime",
+  "language",
+  "format",
+  "rating",
+  "movieStatus",
+  "status",
+] as const;
+
 export const ShowtimeUpdateInput = z
   .object({
     id,
     expectedVersion: z.number().int().positive(),
+    movieTitle: showtimeFields.movieTitle.optional(),
+    auditorium: showtimeFields.auditorium.optional(),
+    startTime: showtimeFields.startTime.optional(),
+    endTime: showtimeFields.endTime.optional(),
+    language: showtimeFields.language.optional(),
+    format: showtimeFields.format.optional(),
+    rating: showtimeFields.rating.optional(),
     movieStatus: MovieStatus.optional(),
     status: ShowtimeStatus.optional(),
   })
-  .refine((v) => v.movieStatus !== undefined || v.status !== undefined, "Nothing to update");
+  .refine((v) => EDITABLE_KEYS.some((k) => v[k] !== undefined), "Nothing to update")
+  .refine(endsAfterStart, { message: END_BEFORE_START, path: ["endTime"] });
+export type ShowtimeUpdateInput = z.input<typeof ShowtimeUpdateInput>;
 
 export const ArchiveAllInput = z.object({ theaterId: id });
 export const ArchiveAllOutput = z.object({ archived: z.number().int() });

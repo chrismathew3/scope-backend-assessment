@@ -31,7 +31,8 @@ export interface AgentOutcome {
   review: AgentReview | null;
   status: "ok" | "fallback";
   error: string | null;
-  durationMs: number;
+  /** Null when no model call was made. */
+  durationMs: number | null;
   summary: string | null;
   trace: AgentTraceStep[];
   usage: { inputTokens: number; outputTokens: number };
@@ -65,7 +66,7 @@ How to decide:
 - An archived showtime that appears again at its original time should be "update" with its id (it gets restored).
 - Never match across sequels or different numbers: "Kung Fu Panda 3" is not "Kung Fu Panda 4".
 - A row that repeats an earlier row (same film and start time) is "duplicate" with duplicateOfLine set to the earlier line.
-- Rows marked rejected by the parser must be "skip"; explain why in plain words.
+- Rows marked rejected by the parser must be "skip". Their reason is written by code, so a few words are enough.
 - Otherwise the row is a new showtime: "add".
 - Each existing showtime can be matched by at most one row.
 - The rules' first guess is given for each row. It is often right but misses typos, moved showtimes and heavier renames; overrule it when the evidence says so, and say why.
@@ -77,6 +78,8 @@ Confidence must be calibrated, not always 1:
 - 0.85-0.95: same start time, clearly the same film despite a spelling, numbering or auditorium-name change.
 - 0.6-0.85: a moved showtime, a restored archived showtime, a heavy typo, or any call that relies on judgement.
 - below 0.6: genuinely unsure; say what would settle it.
+
+Titles and auditoriums as written: each candidate says whether the drop's text is word-for-word the stored text (titleWrittenTheSame, auditoriumWrittenTheSame). The rules' "basis" compares titles after ignoring case, punctuation and spacing, so a rules match does NOT mean the text is identical. When the text differs, never call the title or auditorium "identical", "exact" or "the same"; say "same film" and name the drop's spelling, e.g. the drop writes it "Spider Man - Homecoming".
 
 Explanations: one short sentence (under 18 words), plain English, for a cinema operations person. Don't restate the change itself (the screen already shows it); say why it is the same showtime or why it is new. Mention the concrete evidence (the drop's spelling, the times, the auditorium names). Write "from X to Y", never arrow symbols. No jargon like "title key" or "trigram".
 
@@ -105,7 +108,7 @@ function compactShowtime(s: ExistingShowtime, timezone: string) {
 
 /** Likely matches for a row: similar title, same start or within 3h on the same day. */
 export function candidatesFor(
-  row: { movieTitleKey: string; startTime: Date },
+  row: { movieTitle?: string; movieTitleKey: string; auditorium?: string; startTime: Date },
   existing: ExistingShowtime[],
   timezone: string,
   limit = 3,
@@ -128,6 +131,8 @@ export function candidatesFor(
       ...compactShowtime(s, timezone),
       titleSimilarity: Math.round(similarity * 100) / 100,
       sameNumbersInTitle: sameNumbers,
+      ...(row.movieTitle !== undefined && { titleWrittenTheSame: row.movieTitle === s.movieTitle }),
+      ...(row.auditorium !== undefined && { auditoriumWrittenTheSame: row.auditorium === s.auditorium }),
     }));
 }
 
@@ -164,6 +169,14 @@ function describeQuery(q: { title?: string | null; startTime?: string | null; au
   return parts.join(" ") || "everything";
 }
 
+/** What each rules match method means, in words that don't read as "exact text". */
+const RULE_BASIS: Record<string, string> = {
+  exact_key: "same start; titles equal once case, punctuation and spacing are ignored",
+  fuzzy_title: "same start; titles similar but not equal",
+  reactivated: "archived showtime at the same start",
+  moved: "similar title, start time moved",
+};
+
 async function runBatch(
   resolved: ResolvedModel,
   input: AgentInput,
@@ -191,7 +204,7 @@ async function runBatch(
             rating: r.value.rating,
           }
         : { raw: r.raw, problems: r.errors.map((e) => `${e.column}: ${e.message}`) }),
-      rulesGuess: { action: r.outcome === "rejected" ? "skip" : r.outcome, showtimeId: r.showtimeId, method: r.matchMethod },
+      rulesGuess: { action: r.outcome === "rejected" ? "skip" : r.outcome, showtimeId: r.showtimeId, basis: RULE_BASIS[r.matchMethod ?? ""] ?? null },
       candidates: r.value ? candidatesFor(r.value, existing, tz) : [],
     }));
 
@@ -280,15 +293,25 @@ export async function runReconciliationAgent(resolved: ResolvedModel, input: Age
     kind: "note",
     label: `Compared ${all.length} row${all.length === 1 ? "" : "s"} against ${input.existing.length} showtime${input.existing.length === 1 ? "" : "s"} at ${input.theater.name}`,
     detail:
-      sent.length < all.length
+      sent.length === 0
+        ? null
+        : sent.length < all.length
         ? `${sent.length} row${sent.length === 1 ? "" : "s"} needed judgement and went to the agent; the rules settled the other ${all.length - sent.length}.`
         : batches.length > 1
           ? `Split into ${batches.length} batches of up to ${BATCH_SIZE} rows`
           : null,
   });
   if (batches.length === 0) {
-    trace.push({ kind: "note", label: "Nothing needed the agent's judgement", detail: null });
-    return { review: { summary: "", rows: [], missing: [], delegated: [] }, status: "ok", error: null, durationMs: Date.now() - started, summary: null, trace, usage: { inputTokens: 0, outputTokens: 0 } };
+    // No model call happened: say so, and record no latency.
+    return {
+      review: { summary: "", rows: [], missing: [], delegated: [] },
+      status: "ok",
+      error: null,
+      durationMs: null,
+      summary: "No rows needed judgement; the rules decided every row.",
+      trace,
+      usage: { inputTokens: 0, outputTokens: 0 },
+    };
   }
 
   const controller = new AbortController();

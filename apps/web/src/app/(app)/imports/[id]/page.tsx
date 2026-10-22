@@ -393,9 +393,11 @@ function Review({
               <span className="text-ink">
                 {agent.status !== "ok"
                   ? "Rules only, no agent run"
-                  : rows.some((r) => r.decisionSource === "ai")
-                    ? `Reviewed by ${modelName(agent.model)}${agent.durationMs ? ` in ${(agent.durationMs / 1000).toFixed(1)}s` : ""}`
-                    : "No row needed the agent's judgement; the rules settled every one"}
+                  : agent.durationMs === null
+                    ? "Rules only, no agent call needed"
+                    : rows.some((r) => r.decisionSource === "ai")
+                      ? `Reviewed by ${modelName(agent.model)} in ${(agent.durationMs / 1000).toFixed(1)}s`
+                      : `Checked by ${modelName(agent.model)}; the rules settled every row`}
               </span>
               {agent.summary && <span className="block text-ink-2">{agent.summary}</span>}
               {agent.overrides > 0 && (

@@ -10,13 +10,15 @@ import {
   type ShowtimeStatus,
 } from "@scope/shared";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, ChevronUp, Search, SlidersHorizontal, X } from "lucide-react";
+import { ChevronDown, ChevronRight, ChevronUp, Search, SlidersHorizontal, X } from "lucide-react";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useDebounce } from "~/lib/hooks/useDebounce";
+import { movieStatusLabel, statusLabel } from "~/lib/labels";
 import { errorMessage, type RouterInputs, useTRPC } from "~/lib/trpc";
 import { button, column, field, formatDay, formatTime, h1, inlineSelect, page, plural, selectField } from "~/lib/ui";
 import { useShell } from "../_components/AppShell";
+import { ShowtimePanel, type ShowtimePanelMode } from "../_components/ShowtimePanel";
 
 type ListInput = RouterInputs["showtimes"]["list"];
 type AdminRow = Extract<ShowtimeRow, { access: "admin" }>;
@@ -56,13 +58,6 @@ const filterLabels: Record<keyof Filters, string> = {
 const dayBoundary = (date: string, end: boolean) =>
   date ? new Date(`${date}T${end ? "23:59:59.999" : "00:00:00"}`).toISOString() : undefined;
 
-const movieStatusLabel: Record<MovieStatus, string> = {
-  approved: "Approved",
-  draft: "Draft",
-  flagged: "Flagged",
-  "needs-review": "Needs review",
-};
-const statusLabel: Record<ShowtimeStatus, string> = { active: "Active", inactive: "Inactive", archived: "Archived" };
 const statusDot: Record<ShowtimeStatus, string> = { active: "bg-ink", inactive: "bg-risk", archived: "bg-line-strong" };
 
 export default function ShowtimesPage() {
@@ -77,12 +72,19 @@ export default function ShowtimesPage() {
   const [sort, setSort] = useState<ShowtimeSort>("startTime");
   const [order, setOrder] = useState<"asc" | "desc">("asc");
   const [pendingId, setPendingId] = useState<string | null>(null);
+  const [panel, setPanel] = useState<ShowtimePanelMode | null>(null);
+  const closePanel = useCallback(() => setPanel(null), []);
 
   const scopeId = theaterId === "all" ? undefined : theaterId;
   const role = scopeId ? me.theaterRoles[scopeId] : undefined;
   const isAdminHere = role === "admin";
   const roles = Object.values(me.theaterRoles);
   const allowAdminSorts = scopeId ? isAdminHere : roles.length > 0 && roles.every((r) => r === "admin");
+  const adminTheaters = useMemo(
+    () => theaters.filter((t) => me.theaterRoles[t.id] === "admin"),
+    [theaters, me.theaterRoles],
+  );
+  const canWriteHere = scopeId ? isAdminHere : adminTheaters.length > 0;
   const timezones = useMemo(() => Object.fromEntries(theaters.map((t) => [t.id, t.timezone])), [theaters]);
 
   const input: ListInput = {
@@ -186,22 +188,30 @@ export default function ShowtimesPage() {
           <h1 className={h1}>{selected?.name ?? "All theaters"}</h1>
           <p className="mt-2 text-[15px] text-ink-2">{subline.join(" · ")}</p>
         </div>
-        {isAdminHere && scopeId && (
-          <div className="flex items-center gap-1">
+        {canWriteHere && (
+          <div className="flex flex-wrap items-center gap-1">
+            {scopeId && (
+              <button
+                className={button.quiet}
+                disabled={archiveAll.isPending}
+                onClick={() => {
+                  if (
+                    confirm(
+                      `Archive every showtime at ${selected?.name}? They stay in the database and can be restored by a new import.`,
+                    )
+                  ) {
+                    archiveAll.mutate({ theaterId: scopeId });
+                  }
+                }}
+              >
+                Clear schedule
+              </button>
+            )}
             <button
-              className={button.quiet}
-              disabled={archiveAll.isPending}
-              onClick={() => {
-                if (
-                  confirm(
-                    `Archive every showtime at ${selected?.name}? They stay in the database and can be restored by a new import.`,
-                  )
-                ) {
-                  archiveAll.mutate({ theaterId: scopeId });
-                }
-              }}
+              className={`${button.secondary} sm:mr-1`}
+              onClick={() => setPanel({ kind: "new", theaterId: scopeId })}
             >
-              Clear schedule
+              New showtime
             </button>
             <Link href="/imports/new" className={button.primary}>
               Import CSV
@@ -209,10 +219,6 @@ export default function ShowtimesPage() {
           </div>
         )}
       </div>
-
-      {!scopeId && roles.includes("admin") && (
-        <p className="mt-4 text-[13px] text-ink-2">Choose a single theater in the top left to import a partner CSV.</p>
-      )}
 
       <div className="mt-8 flex flex-wrap items-center gap-2">
         <div className="relative min-w-[220px] flex-1 sm:max-w-sm">
@@ -375,10 +381,33 @@ export default function ShowtimesPage() {
               return (
                 <tr
                   key={row.id}
-                  className={`border-b border-line transition-colors hover:bg-[#fafafa] ${admin?.status === "archived" ? "text-ink-3" : ""}`}
+                  // Admin rows open the editor on click (the title button is the keyboard path);
+                  // clicks on the inline selects stay with the selects.
+                  onClick={
+                    admin
+                      ? (e) => {
+                          if (!(e.target as HTMLElement).closest("select, button"))
+                            setPanel({ kind: "edit", row: admin });
+                        }
+                      : undefined
+                  }
+                  className={`border-b border-line transition-colors hover:bg-[#fafafa] ${admin ? "cursor-pointer" : ""} ${admin?.status === "archived" ? "text-ink-3" : ""}`}
                 >
                   {!scopeId && <td className="py-2.5 pr-4 text-ink-2">{row.theaterName}</td>}
-                  <td className="py-2.5 pr-4 font-medium">{row.movieTitle}</td>
+                  <td className="py-2.5 pr-4 font-medium">
+                    {admin ? (
+                      <button
+                        type="button"
+                        onClick={() => setPanel({ kind: "edit", row: admin })}
+                        className="text-left font-medium underline-offset-4 hover:underline"
+                        aria-label={`Edit ${row.movieTitle}`}
+                      >
+                        {row.movieTitle}
+                      </button>
+                    ) : (
+                      row.movieTitle
+                    )}
+                  </td>
                   {showInternal && (
                     <td className="py-1.5 pr-4">
                       {admin ? (
@@ -450,22 +479,19 @@ export default function ShowtimesPage() {
               key={row.id}
               className={`border-b border-line py-3 ${admin?.status === "archived" ? "text-ink-3" : ""}`}
             >
-              <div className="flex items-baseline justify-between gap-3">
-                <span className="font-medium">{row.movieTitle}</span>
-                <span className="tnum shrink-0 text-[13px]">{formatTime(row.startTime, tz)}</span>
-              </div>
-              <div className="mt-0.5 text-[13px] text-ink-2">
-                {[
-                  !scopeId ? row.theaterName : null,
-                  row.auditorium,
-                  formatDay(row.startTime, tz),
-                  row.format,
-                  row.rating,
-                  admin ? `${statusLabel[admin.status]}, ${movieStatusLabel[admin.movieStatus].toLowerCase()}` : null,
-                ]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </div>
+              {admin ? (
+                <button
+                  type="button"
+                  onClick={() => setPanel({ kind: "edit", row: admin })}
+                  className="flex w-full items-center gap-3 text-left"
+                  aria-label={`Edit ${row.movieTitle}, ${formatDay(row.startTime, tz)} ${formatTime(row.startTime, tz)}`}
+                >
+                  <PhoneRowText row={row} tz={tz} showTheater={!scopeId} />
+                  <ChevronRight aria-hidden className="size-4 shrink-0 text-ink-3" />
+                </button>
+              ) : (
+                <PhoneRowText row={row} tz={tz} showTheater={!scopeId} />
+              )}
             </li>
           );
         })}
@@ -499,6 +525,26 @@ export default function ShowtimesPage() {
               : `Show more (${rows.length} of ${first?.totalCapped ? "10,000+" : first?.total})`}
           </button>
         </div>
+      )}
+
+      {panel && (
+        <ShowtimePanel
+          key={panel.kind === "edit" ? panel.row.id : "new"}
+          mode={panel}
+          adminTheaters={adminTheaters}
+          suggestions={{
+            auditoriums: facets.data?.auditoriums ?? [],
+            formats: facets.data?.formats ?? [],
+            languages: facets.data?.languages ?? [],
+            ratings: facets.data?.ratings ?? [],
+          }}
+          onClose={closePanel}
+          onSaved={(row, created) => {
+            setPanel(null);
+            notify(created ? `${row.movieTitle} added.` : `${row.movieTitle} updated.`);
+            void refresh();
+          }}
+        />
       )}
     </div>
   );
@@ -566,5 +612,29 @@ function FilterSelect({
         ))}
       </select>
     </label>
+  );
+}
+
+function PhoneRowText({ row, tz, showTheater }: { row: ShowtimeRow; tz: string | undefined; showTheater: boolean }) {
+  const admin = row.access === "admin" ? row : null;
+  return (
+    <div className="min-w-0 flex-1">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="font-medium">{row.movieTitle}</span>
+        <span className="tnum shrink-0 text-[13px]">{formatTime(row.startTime, tz)}</span>
+      </div>
+      <div className="mt-0.5 text-[13px] text-ink-2">
+        {[
+          showTheater ? row.theaterName : null,
+          row.auditorium,
+          formatDay(row.startTime, tz),
+          row.format,
+          row.rating,
+          admin ? `${statusLabel[admin.status]}, ${movieStatusLabel[admin.movieStatus].toLowerCase()}` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+      </div>
+    </div>
   );
 }

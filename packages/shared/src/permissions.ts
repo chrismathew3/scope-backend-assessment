@@ -15,7 +15,8 @@ export const THEATER_PERMISSIONS = {
   admin: [
     "showtime.read",
     "showtime.readInternal", // movieStatus, status, timestamps, non-active rows
-    "showtime.update",
+    "showtime.create",
+    "showtime.update", // every field; archiving (status "archived") is the delete
     "schedule.archiveAll",
     "import.manage",
     "member.read",

@@ -179,7 +179,30 @@ export const showtimes = pgTable(
     index("showtime_title_trgm_idx").using("gin", t.movieTitleKey.op("gin_trgm_ops")),
     index("showtime_title_sort_idx").on(t.movieTitleKey, t.id),
     index("showtime_updated_idx").on(t.updatedAt, t.id),
+    index("showtime_end_idx").on(t.endTime, t.id),
+    index("showtime_movie_status_sort_idx").on(t.movieStatus, t.id),
+    // Filter values (facets): a skip scan walks each of these in a few probes.
+    index("showtime_facet_format_idx").on(t.theaterId, t.status, t.format),
+    index("showtime_facet_language_idx").on(t.theaterId, t.status, t.language),
+    index("showtime_facet_rating_idx").on(t.theaterId, t.status, t.rating),
+    index("showtime_facet_auditorium_idx").on(t.theaterId, t.status, t.auditorium),
+    index("showtime_facet_movie_status_idx").on(t.theaterId, t.movieStatus),
   ],
+);
+
+/**
+ * Every title key ever scheduled, kept by a trigger on showtime. Title search
+ * matches here first (thousands of rows, not hundreds of thousands), then
+ * fetches showtimes by exact key. Never returned to clients directly.
+ */
+export const movieTitles = pgTable(
+  "movie_title",
+  {
+    key: text("key").primaryKey(),
+    title: text("title").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("movie_title_key_trgm_idx").using("gin", t.key.op("gin_trgm_ops"))],
 );
 
 /* ───────────────────────── CSV imports ───────────────────────── */

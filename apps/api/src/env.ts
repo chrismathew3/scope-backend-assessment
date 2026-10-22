@@ -21,6 +21,14 @@ const schema = z.object({
   AI_THINKING: z.enum(["minimal", "low", "medium", "high"]).default("low"),
   /** Optional: call Gemini directly instead of through the gateway. */
   GEMINI_API_KEY: optionalSecret,
+  /**
+   * Optional Gemini API model id for the direct path. Unset, it follows AI_MODEL:
+   * "google/gemini-3-flash" becomes "gemini-3-flash-preview", the Gemini API's name for it.
+   */
+  GEMINI_MODEL: z
+    .string()
+    .optional()
+    .transform((v) => v?.trim() || undefined),
   AI_GATEWAY_API_KEY: optionalSecret,
   VERCEL_OIDC_TOKEN: optionalSecret,
   /** Public demo: show the seeded one-click logins and protect those accounts from lockout. */

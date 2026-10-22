@@ -202,6 +202,66 @@ describe.skipIf(!RUN)("end to end", () => {
     await reset();
   });
 
+  test("admins have full write: edit any field, create, archive; viewers can't", async () => {
+    const before = await showtime("st-rv-001");
+    const [{ v: versionBefore }] = await sql`select schedule_version as v from theater where id='theater-riverside'`;
+    const start = new Date(before.start_time.getTime() + 30 * 60_000).toISOString();
+    const end = new Date(before.end_time.getTime() + 30 * 60_000).toISOString();
+
+    // Taylor: admin in Riverside, viewer in Downtown.
+    const edit = await users.taylor.patch("/showtimes/st-rv-001", {
+      expectedVersion: before.version,
+      movieTitle: "  The Fall Guy (Director's Cut) ",
+      auditorium: "Aud 7",
+      startTime: start,
+      endTime: end,
+      format: "imax",
+    });
+    expect(edit.status).toBe(200);
+    const after = await showtime("st-rv-001");
+    expect(after.movie_title).toBe("The Fall Guy (Director's Cut)");
+    expect(after.auditorium_key).toBe("auditorium 7");
+    expect(after.start_time.toISOString()).toBe(start);
+    expect(after.version).toBe(before.version + 1);
+    const [{ v: versionAfter }] = await sql`select schedule_version as v from theater where id='theater-riverside'`;
+    expect(versionAfter).toBeGreaterThan(versionBefore);
+    const [entry] = await sql`select * from audit_log where action='showtime.update' and entity_id='st-rv-001' order by created_at desc limit 1`;
+    expect(entry).toBeTruthy();
+
+    expect((await users.taylor.patch("/showtimes/st-dt-001", { expectedVersion: 1, movieTitle: "Nope" })).status).toBe(403);
+    expect((await users.riley.patch("/showtimes/st-dt-001", { expectedVersion: 1, auditorium: "Aud 9" })).status).toBe(403);
+    expect((await users.taylor.patch("/showtimes/st-rv-001", { expectedVersion: before.version, rating: "R" })).status).toBe(409);
+    const backwards = await users.taylor.patch("/showtimes/st-rv-001", {
+      expectedVersion: after.version,
+      startTime: end,
+      endTime: start,
+    });
+    expect(backwards.status).toBe(400);
+
+    const fresh = {
+      theaterId: "theater-riverside",
+      movieTitle: "Challengers",
+      auditorium: "Auditorium B",
+      startTime: "2025-03-16T03:00:00Z",
+      endTime: "2025-03-16T05:11:00Z",
+      language: "English",
+      format: "2D",
+      rating: "R",
+    };
+    const created = await users.taylor.post("/showtimes", fresh);
+    expect(created.status).toBe(200);
+    expect(created.json.movieStatus).toBe("needs-review");
+    expect((await users.taylor.post("/showtimes", fresh)).status).toBe(409); // same film + start
+    expect((await users.taylor.post("/showtimes", { ...fresh, theaterId: "theater-downtown" })).status).toBe(403);
+    expect((await users.riley.post("/showtimes", { ...fresh, theaterId: "theater-downtown" })).status).toBe(403);
+
+    // Archive is the delete.
+    const archived = await users.taylor.patch(`/showtimes/${created.json.id}`, { expectedVersion: 1, status: "archived" });
+    expect(archived.status).toBe(200);
+    expect((await showtime(created.json.id)).archived_at).not.toBeNull();
+    await reset();
+  });
+
   /* ───────── the AI import flow ───────── */
 
   test(

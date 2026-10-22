@@ -12,7 +12,6 @@
     "db:seed": "bun src/db/seed.ts",
     "db:seed:scale": "bun src/db/seed-scale.ts",
     "db:reset": "bun src/db/reset.ts && bun src/db/migrate.ts && bun src/db/seed.ts",
-    "user:create-super-admin": "bun src/scripts/create-super-admin.ts",
     "test:e2e": "E2E=1 bun test test/e2e --timeout 120000"
   },
   "dependencies": {

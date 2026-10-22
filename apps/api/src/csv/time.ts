@@ -4,45 +4,9 @@
  * times in the theater's own timezone.
  */
 
-export type TimeParse =
-  | { ok: true; date: Date; warning?: string }
-  | { ok: false; error: string };
+import { type TimeParse, zonedTimeToUtc } from "@scope/shared";
 
-const formatters = new Map<string, Intl.DateTimeFormat>();
-
-function formatter(timeZone: string): Intl.DateTimeFormat {
-  let f = formatters.get(timeZone);
-  if (!f) {
-    f = new Intl.DateTimeFormat("en-US", {
-      timeZone,
-      hourCycle: "h23",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-    formatters.set(timeZone, f);
-  }
-  return f;
-}
-
-/** Wall-clock time in `timeZone` at instant `utcMs`, expressed as if it were UTC. */
-function wallClockMs(utcMs: number, timeZone: string): number {
-  const parts: Record<string, number> = {};
-  for (const p of formatter(timeZone).formatToParts(new Date(utcMs))) {
-    if (p.type !== "literal") parts[p.type] = Number(p.value);
-  }
-  return Date.UTC(
-    parts.year!,
-    parts.month! - 1,
-    parts.day!,
-    parts.hour === 24 ? 0 : parts.hour!,
-    parts.minute!,
-    parts.second!,
-  );
-}
+export { type TimeParse, zonedTimeToUtc };
 
 function daysInMonth(year: number, month: number): number {
   return new Date(Date.UTC(year, month, 0)).getUTCDate();
@@ -70,35 +34,6 @@ function validParts(p: Parts): boolean {
     p.second >= 0 &&
     p.second <= 59
   );
-}
-
-/**
- * Converts a wall-clock time in `timeZone` to an instant.
- * Handles DST: a time that never happens (spring forward) is an error; a time that
- * happens twice (fall back) resolves to the earlier instant with a warning.
- */
-export function zonedTimeToUtc(p: Parts, timeZone: string): TimeParse {
-  const wall = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
-  const offsets = new Set<number>();
-  for (const probe of [wall - 12 * 3600_000, wall, wall + 12 * 3600_000]) {
-    offsets.add(wallClockMs(probe, timeZone) - probe);
-  }
-  const candidates = [...offsets]
-    .map((offset) => wall - offset)
-    .filter((t) => wallClockMs(t, timeZone) === wall)
-    .sort((a, b) => a - b);
-  const unique = [...new Set(candidates)];
-  if (unique.length === 0) {
-    return { ok: false, error: `This local time does not exist in ${timeZone} (daylight saving change)` };
-  }
-  if (unique.length > 1) {
-    return {
-      ok: true,
-      date: new Date(unique[0]!),
-      warning: `This local time happens twice in ${timeZone} (daylight saving change); used the first one`,
-    };
-  }
-  return { ok: true, date: new Date(unique[0]!) };
 }
 
 const ISO_WITH_ZONE =

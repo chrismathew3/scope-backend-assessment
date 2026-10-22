@@ -37,7 +37,7 @@ for (const id of models) {
   for (let run = 0; run < runs; run++) {
     for (const s of samples) {
       const out = await runReconciliationAgent(resolved, { theater: { name: "Downtown Cinema 7", timezone: TZ }, reconciled: s.rules, existing: s.existing });
-      score.ms.push(out.durationMs);
+      score.ms.push(out.durationMs ?? 0);
       score.inTok += out.usage.inputTokens;
       score.outTok += out.usage.outputTokens;
       if (out.status !== "ok") {

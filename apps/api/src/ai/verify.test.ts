@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { parseShowtimeCsv, reconcile } from "../csv";
 import type { ExistingShowtime } from "../csv/types";
 import { existingForFile, fixtureExisting } from "./testing/fixture-existing";
-import { type AgentReview, type AgentRowDecision, mergeAgentReview } from "./verify";
+import { type AgentReview, type AgentRowDecision, mergeAgentReview, rejectionReason, splitSentences } from "./verify";
 
 const TZ = "America/Los_Angeles";
 const expected = JSON.parse(readFileSync(new URL("../../test/fixtures/csv/agent-expected.json", import.meta.url), "utf8")) as Record<
@@ -71,7 +71,8 @@ describe("mergeAgentReview", () => {
     expect(moved.diffs.map((x) => x.field)).toContain("startTime");
     expect(m.rows.find((r) => r.lineNumber === 7)!.matchMethod).toBe("reactivated");
     expect(m.rows.find((r) => r.lineNumber === 8)!.duplicateOf).toBe(3);
-    expect(m.rows.find((r) => r.lineNumber === 9)!.explanation).toBe("This row is for Riverside Multiplex.");
+    // Rejected rows' reasons come from code, not the agent.
+    expect(m.rows.find((r) => r.lineNumber === 9)!.explanation).toBe("Not imported: the row is for Riverside Multiplex, not Downtown Cinema 7.");
   });
 
   test("a hallucinated showtime id falls back to the rules", () => {
@@ -290,5 +291,84 @@ describe("mergeAgentReview", () => {
     const m = mergeAgentReview(reconcile(parsed.rows, existing), null, existing, { timezone: TZ });
     expect(m.rows[0]!.outcome).toBe("rejected");
     expect(m.archives.map((a) => a.showtime.id)).not.toContain("st-dt-003");
+  });
+});
+
+describe("explanations match the data", () => {
+  const explain = (name: string, line: number, showtimeId: string, explanation: string) => {
+    const { rules, existing } = load(name);
+    const review: AgentReview = { summary: "", rows: [d(line, "update", showtimeId, { explanation })], missing: [] };
+    return mergeAgentReview(rules, review, existing, { timezone: TZ }).rows.find((r) => r.lineNumber === line)!;
+  };
+
+  test("an 'identical title' claim is replaced when the drop spells the title differently", () => {
+    const row = explain("new-drop", 2, "st-dt-001", "Film title and start time are identical.");
+    expect(row.partnerTitle).toBe("Spider Man - Homecoming");
+    expect(row.explanation).toBe('Same film and start time as the stored showtime; the drop spells it "Spider Man - Homecoming".');
+  });
+
+  test("'match exactly' is caught too, and other sentences stay", () => {
+    const row = explain("tricky-drop", 4, "st-dt-003", "Title and time match exactly. Laser is a renamed Auditorium 1.");
+    expect(row.explanation).toBe('Same film and start time as the stored showtime; the drop spells it "Dune Pt. II". Laser is a renamed Auditorium 1.');
+  });
+
+  test("an accurate reason that names the spelling is kept", () => {
+    const text = 'Same film and start time; the drop writes it "Spider Man - Homecoming".';
+    expect(explain("new-drop", 2, "st-dt-001", text).explanation).toBe(text);
+    expect(explain("new-drop", 2, "st-dt-001", "Same film and start time.").explanation).toBe("Same film and start time.");
+  });
+
+  test("'identical' is fine when the text really is the same", () => {
+    // "Dune: Part Two  " cleans to the stored title exactly.
+    const row = explain("new-drop", 5, "st-dt-004", "Title and start time are identical.");
+    expect(row.partnerTitle).toBeUndefined();
+    expect(row.explanation).toBe("Title and start time are identical.");
+  });
+
+  test("an 'identical auditorium' claim is replaced when the drop names it differently", () => {
+    const row = explain("new-drop", 2, "st-dt-001", "Same film at the same time in an identical auditorium.");
+    expect(row.explanation).toBe('Same film and start time as the stored showtime; the drop lists the auditorium as "Aud 1".');
+    // "Same auditorium" is true for "Aud 1" vs "Auditorium 1".
+    expect(explain("new-drop", 2, "st-dt-001", "Same film, start time and auditorium.").explanation).toBe("Same film, start time and auditorium.");
+  });
+
+  test("rejected rows get a code-written reason, never the agent's", () => {
+    const { rules, existing } = load("tricky-drop");
+    const m = mergeAgentReview(rules, { ...goodTricky, rows: [...goodTricky.rows.slice(0, 7), d(9, "skip", null, { explanation: "Parser rejected the row" })] }, existing, { timezone: TZ });
+    const row = m.rows.find((r) => r.lineNumber === 9)!;
+    expect(row.decisionSource).toBe("rules");
+    expect(row.explanation).toBe("Not imported: the row is for Riverside Multiplex, not Downtown Cinema 7.");
+  });
+
+  test("validation issues read as plain English", () => {
+    expect(rejectionReason([{ column: "start_time", message: "Required." }])).toBe("Not imported: missing start time.");
+    expect(rejectionReason([{ column: "end_time", message: "Ends before (or when) it starts." }])).toBe(
+      "Not imported: the end time is at or before the start time.",
+    );
+    expect(rejectionReason([{ column: "*", message: "Row has 7 cells but the header has 9 (missing-cell)." }])).toBe(
+      "Not imported: the row has 7 columns but the header has 9.",
+    );
+    expect(rejectionReason([{ column: "start_time", message: 'Invalid date "2025-13-40"' }])).toBe(
+      'Not imported: the start time can\'t be read (Invalid date "2025-13-40").',
+    );
+  });
+});
+
+describe("sentence splitting", () => {
+  test("abbreviations like 'Aud.' and 'Pt.' don't end a sentence", () => {
+    expect(splitSentences("Same film. Auditorium renamed from Auditorium A to Aud. A.")).toEqual(["Same film.", "Auditorium renamed from Auditorium A to Aud. A."]);
+    expect(splitSentences("Dune Pt. II is Dune: Part Two. Same start.")).toEqual(["Dune Pt. II is Dune: Part Two.", "Same start."]);
+  });
+
+  test("a reason that restates an 'Aud.' rename leaves no stray fragment", () => {
+    const { rules, existing } = load("new-drop");
+    const review: AgentReview = {
+      summary: "",
+      rows: [d(2, "update", "st-dt-001", { explanation: "Auditorium changed from Auditorium 1 to Aud. A." })],
+      missing: [],
+    };
+    const row = mergeAgentReview(rules, review, existing, { timezone: TZ }).rows.find((r) => r.lineNumber === 2)!;
+    expect(row.explanation).not.toBe("A.");
+    expect(row.explanation).toBe("Same film and start time as the stored showtime.");
   });
 });

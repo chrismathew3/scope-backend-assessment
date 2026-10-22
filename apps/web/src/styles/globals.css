@@ -110,7 +110,30 @@
   }
 }
 
+@keyframes sheet-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes scrim-in {
+  from {
+    opacity: 0;
+  }
+}
+
 @layer utilities {
+  .sheet-in {
+    animation: sheet-in 220ms var(--ease-out-expo) both;
+  }
+  .scrim-in {
+    animation: scrim-in 160ms ease-out both;
+  }
   .settle {
     animation: settle 420ms var(--ease-out-expo) both;
   }

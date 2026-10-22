@@ -135,7 +135,7 @@ export function rulesExplanation(row: FinalRow, existingById: Map<string, Existi
   const v = row.value;
   switch (row.outcome) {
     case "rejected":
-      return `Not imported: ${row.errors.map((e) => e.message.replace(/\.$/, "")).join("; ") || "the row is invalid"}.`;
+      return rejectionReason(row.errors);
     case "duplicate":
       return row.duplicateOf
         ? `Repeats line ${row.duplicateOf} (same film and start time), so it's skipped.`
@@ -145,7 +145,9 @@ export function rulesExplanation(row: FinalRow, existingById: Map<string, Existi
         ? `Nothing in the schedule matches this film at ${formatLocal(v.startTime, timezone)}, so it's added as new.`
         : "Added as a new showtime.";
     case "unchanged":
-      return "Already in the schedule exactly as listed. Only the feed's last-updated time is recorded.";
+      return row.partnerTitle
+        ? `Already in the schedule; the drop spells the title "${row.partnerTitle}" and the stored title is kept.`
+        : "Already in the schedule exactly as listed. Only the feed's last-updated time is recorded.";
     case "update": {
       // The screen already shows the change itself; this says why it's the same showtime.
       const s = row.showtimeId ? existingById.get(row.showtimeId) : undefined;
@@ -155,6 +157,40 @@ export function rulesExplanation(row: FinalRow, existingById: Map<string, Existi
       return "Same film and start time as the stored showtime.";
     }
   }
+}
+
+const columnNames: Record<string, string> = {
+  theater_name: "theater name",
+  movie_title: "film title",
+  auditorium: "auditorium",
+  start_time: "start time",
+  end_time: "end time",
+  language: "language",
+  format: "format",
+  rating: "rating",
+  last_updated: "last-updated time",
+};
+
+/** One validation issue in plain words, e.g. "missing start time". */
+function plainIssue(issue: { column: string; message: string }): string {
+  const name = columnNames[issue.column] ?? "a column";
+  const msg = issue.message.replace(/\.$/, "");
+  if (msg === "Required") return `missing ${name}`;
+  const theater = /^Row is for theater "(.+)", not "(.+)"$/.exec(msg);
+  if (theater) return `the row is for ${theater[1]}, not ${theater[2]}`;
+  if (issue.column === "end_time" && msg.startsWith("Ends before")) return "the end time is at or before the start time";
+  const cells = /^Row has (\d+) cells but the header has (\d+)/.exec(msg);
+  if (cells) return `the row has ${cells[1]} columns but the header has ${cells[2]}`;
+  if (msg.startsWith("Longer than")) return `the ${name} is ${msg.toLowerCase()}`;
+  if (/^(Invalid|Unrecognized) (date|time)|has a date but no time|does not exist in/.test(msg)) return `the ${name} can't be read (${msg})`;
+  return msg.charAt(0).toLowerCase() + msg.slice(1);
+}
+
+/** Why a row wasn't imported, written by code from the validation issues. */
+export function rejectionReason(errors: { column: string; message: string }[]): string {
+  const parts = [...new Set(errors.map(plainIssue))];
+  const text = parts.join("; ") || "the row is invalid";
+  return `Not imported: ${text}.`;
 }
 
 const MISSING_RULES_TEXT = "Not in this drop. Showtimes missing from a new drop are archived.";
@@ -172,6 +208,20 @@ function sameShowtime(a: CleanRow | null, b: CleanRow | null): boolean {
 /** Text that talks about instructions or operators came from the data, not from judgement. */
 const SUSPICIOUS = /\b(instruct\w*|operator|override|as requested|ignore (all|previous)|system prompt)\b/i;
 
+/** Abbreviations common in showtime data that end in a period but don't end a sentence. */
+const ABBREVIATION = /\b(aud|pt|no|st|vol|ch|ep|vs|mr|mrs|ms|dr|jr|sr|approx|e\.g|i\.e)\.$/i;
+
+/** Splits text into sentences without breaking on "Aud. A" or "Pt. II". */
+export function splitSentences(text: string): string[] {
+  const out: string[] = [];
+  for (const piece of text.trim().split(/(?<=[.!?])\s+/)) {
+    const prev = out[out.length - 1];
+    if (prev !== undefined && ABBREVIATION.test(prev)) out[out.length - 1] = `${prev} ${piece}`;
+    else out.push(piece);
+  }
+  return out.filter(Boolean);
+}
+
 /**
  * Agent reasons are shown next to a code-computed diff, so drop sentences that
  * restate the change ("from X to Y", which models sometimes get backwards) and
@@ -180,10 +230,61 @@ const SUSPICIOUS = /\b(instruct\w*|operator|override|as requested|ignore (all|pr
 export function cleanExplanation(text: string, row: FinalRow): string {
   if (!text || SUSPICIOUS.test(text)) return "";
   if (row.diffs.length === 0) return text.trim();
-  const kept = text
-    .split(/(?<=[.!?])\s+/)
-    .filter((sentence) => !/\bfrom\b.+\bto\b/i.test(sentence));
+  // A leftover fragment like "A." is not a reason; drop pieces under two words.
+  const kept = splitSentences(text).filter((sentence) => !/\bfrom\b.+\bto\b/i.test(sentence) && sentence.split(/\s+/).length >= 2);
   return kept.join(" ").trim();
+}
+
+const HEDGE =
+  /\b(despite|although|though|but|typos?|misspel\w*|variants?|variations?|differ\w*|abbreviat\w*|punctuation|formatting|capitali[sz]\w*|spacing|near(ly)?|close(ly)?|similar|minor|apart from|except|spells?|spelled|written|writes)\b/i;
+const STRONG_SAME = /\b(identical|exact(ly)?|verbatim|word[- ]for[- ]word)\b/i;
+const WEAK_SAME = /\b(same|match(es|ed|ing)?)\b/i;
+const TITLE_WORD = /\b(titles?|names?|wording)\b/i;
+const FILM_WORD = /\b(films?|movies?)\b/i;
+const AUDITORIUM_WORD = /\b(aud\w*|screens?|rooms?|halls?|house)\b/i;
+const EVERYTHING_WORD = /\b(all|every|everything)\b/i;
+
+/** Does this sentence say the title (or auditorium) is written exactly as stored? */
+function claimsSame(sentence: string, field: "title" | "auditorium"): boolean {
+  if (HEDGE.test(sentence)) return false;
+  const strong = STRONG_SAME.test(sentence);
+  if (strong && EVERYTHING_WORD.test(sentence)) return true;
+  // "Same auditorium" holds for "Aud 1" vs "Auditorium 1"; only an exact-text claim is wrong.
+  if (field === "auditorium") return AUDITORIUM_WORD.test(sentence) && strong;
+  // "Same film" is true even when the spelling differs; "same title" or "identical film" is not.
+  if (TITLE_WORD.test(sentence) && (strong || WEAK_SAME.test(sentence))) return true;
+  // "Identical film" claims the title; "same film in an identical auditorium" doesn't.
+  return FILM_WORD.test(sentence) && strong && !AUDITORIUM_WORD.test(sentence);
+}
+
+/**
+ * The agent sometimes reads a normalized match as an exact one and says the title
+ * is "identical" when the drop spells it differently. Sentences that claim an
+ * exact title or auditorium the raw text contradicts are replaced with one
+ * code-written sentence that says what the drop actually wrote.
+ */
+export function repairSameClaims(text: string, row: FinalRow, stored: ExistingShowtime | undefined): string {
+  if (!text || !stored || !row.value) return text;
+  const titleDiffers = !!row.partnerTitle && row.partnerTitle !== stored.movieTitle;
+  const audDiffers = row.value.auditorium !== stored.auditorium;
+  if (!titleDiffers && !audDiffers) return text;
+  const sentences = splitSentences(text);
+  const titleBad = titleDiffers && sentences.some((s) => claimsSame(s, "title"));
+  const audBad = audDiffers && sentences.some((s) => claimsSame(s, "auditorium"));
+  if (!titleBad && !audBad) return text;
+  const bad = (s: string) => (titleBad && claimsSame(s, "title")) || (audBad && claimsSame(s, "auditorium"));
+  const sameStart = row.value.startTime.getTime() === stored.startTime.getTime();
+  const notes = [
+    titleBad ? `the drop spells it "${row.partnerTitle}"` : null,
+    audBad ? `${titleBad ? "lists" : "the drop lists"} the auditorium as "${row.value.auditorium}"` : null,
+  ].filter(Boolean);
+  const fix = `Same film${sameStart ? " and start time" : ""} as the stored showtime; ${notes.join(" and ")}.`;
+  const out: string[] = [];
+  for (const s of sentences) {
+    if (!bad(s)) out.push(s);
+    else if (!out.includes(fix)) out.push(fix);
+  }
+  return out.join(" ").trim();
 }
 
 export function mergeAgentReview(
@@ -274,15 +375,9 @@ export function mergeAgentReview(
     const original = det.rows[i]!;
     const d = byLine.get(row.lineNumber);
     if (!row.value) {
-      // Parser-rejected rows stay rejected; the agent may only explain them.
+      // Parser-rejected rows stay rejected, and code writes their reason from the validation issues.
       row.outcome = "rejected";
-      if (d?.action === "skip" && d.explanation) {
-        row.explanation = d.explanation;
-        row.decisionSource = "ai";
-        row.confidence = d.confidence;
-      } else if (d && d.action !== "skip") {
-        corrections++;
-      }
+      if (d && d.action !== "skip") corrections++;
       return;
     }
     if (d && (d.action === "update" || d.action === "unchanged")) {
@@ -393,7 +488,10 @@ export function mergeAgentReview(
       row.aiOverrodeRules = differs;
       if (differs) overrides++;
     }
-    if (row.decisionSource === "ai") row.explanation = cleanExplanation(row.explanation, row);
+    if (row.decisionSource === "ai") {
+      row.explanation = cleanExplanation(row.explanation, row);
+      if (row.showtimeId) row.explanation = repairSameClaims(row.explanation, row, existingById.get(row.showtimeId));
+    }
     if (!row.explanation) row.explanation = rulesExplanation(row, existingById, opts.timezone);
     // A new showtime of a film the theater already lists takes the stored spelling.
     if (row.outcome === "add" && row.value) {

@@ -7,6 +7,7 @@ import { column, formatDateTime, h1, plural, selectField } from "~/lib/ui";
 import { useShell } from "../../_components/AppShell";
 
 const actionText: Record<string, string> = {
+  "showtime.create": "added a showtime",
   "showtime.update": "changed a showtime",
   "schedule.archive_all": "cleared the schedule",
   "import.preview": "uploaded a CSV for review",
@@ -31,16 +32,37 @@ const num = (v: unknown) => (typeof v === "number" ? v : 0);
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 const label: Record<string, string> = {
   movieStatus: "movie status",
+  movieTitle: "title",
+  startTime: "start",
+  endTime: "end",
   status: "status",
   isSuperAdmin: "super admin",
   role: "role",
   name: "name",
 };
-const pretty = (v: unknown) =>
-  v === true ? "yes" : v === false ? "no" : typeof v === "string" ? v.replace(/-/g, " ") : JSON.stringify(v);
+const FIELD_ORDER = [
+  "movieTitle",
+  "auditorium",
+  "startTime",
+  "endTime",
+  "language",
+  "format",
+  "rating",
+  "movieStatus",
+  "status",
+];
+const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+function pretty(v: unknown, timeZone?: string): string {
+  if (v === true) return "yes";
+  if (v === false) return "no";
+  if (typeof v !== "string") return JSON.stringify(v);
+  if (ISO.test(v)) return formatDateTime(v, timeZone);
+  // Enum slugs read as words ("needs-review"); real values like "PG-13" keep their dash.
+  return /^[a-z]+(-[a-z]+)+$/.test(v) ? v.replace(/-/g, " ") : v;
+}
 
 /** One readable sentence per audit entry; internals (model ids, zero counts) stay out. */
-function describe(action: string, before: unknown, after: unknown): string {
+function describe(action: string, before: unknown, after: unknown, timeZone?: string): string {
   const b = (before ?? {}) as Json;
   const a = (after ?? {}) as Json;
   if (action === "import.preview") {
@@ -58,13 +80,20 @@ function describe(action: string, before: unknown, after: unknown): string {
   }
   if (action === "schedule.archive_all") return `${plural(num(a.archived), "showtime")} archived.`;
   if (action === "user.create") return `${str(a.email)}${a.isSuperAdmin ? ", as super admin" : ""}.`;
-  if (action === "demo.reset") return "Seeded schedule restored and imports cleared.";
+  if (action === "demo.reset") return "Seeded schedule restored. Earlier imports and history were cleared for the next reviewer.";
+  if (action === "showtime.create") {
+    return `${str(a.movieTitle)}, ${str(a.auditorium)}, ${pretty(a.startTime, timeZone)}.`;
+  }
   const parts: string[] = [];
-  for (const key of Object.keys(a)) {
+  // Postgres jsonb doesn't keep key order; read fields in the order the form shows them.
+  const rank = (k: string) => FIELD_ORDER.indexOf(k) + 1 || FIELD_ORDER.length + 1;
+  for (const key of Object.keys(a).sort((x, y) => rank(x) - rank(y))) {
     if (a[key] === undefined || JSON.stringify(a[key]) === JSON.stringify(b[key])) continue;
     const name = label[key] ?? key;
     parts.push(
-      key in b && b[key] != null ? `${name} from ${pretty(b[key])} to ${pretty(a[key])}` : `${name} ${pretty(a[key])}`,
+      key in b && b[key] != null
+        ? `${name} from ${pretty(b[key], timeZone)} to ${pretty(a[key], timeZone)}`
+        : `${name} ${pretty(a[key], timeZone)}`,
     );
   }
   return parts.length ? `${parts.join(", ").replace(/^./, (c) => c.toUpperCase())}.` : "";
@@ -77,6 +106,7 @@ export default function AuditPage() {
   const adminTheaters = theaters.filter((t) => me.theaterRoles[t.id] === "admin");
   const log = useQuery(trpc.audit.list.queryOptions({ theaterId: theaterId || undefined, limit: 100 }));
   const names = Object.fromEntries(theaters.map((t) => [t.id, t.name]));
+  const timezones = Object.fromEntries(theaters.map((t) => [t.id, t.timezone]));
 
   return (
     <div className={`${column} pt-8 pb-24`}>
@@ -104,7 +134,7 @@ export default function AuditPage() {
       {log.error && <p className="mt-6 text-[13px] text-remove">{errorMessage(log.error)}</p>}
       <ul className="mt-8 border-t border-line">
         {(log.data ?? []).map((e) => {
-          const detail = describe(e.action, e.before, e.after);
+          const detail = describe(e.action, e.before, e.after, e.theaterId ? timezones[e.theaterId] : undefined);
           return (
             <li
               key={e.id}
@@ -113,7 +143,8 @@ export default function AuditPage() {
               <span className="tnum text-ink-2">{formatDateTime(e.createdAt)}</span>
               <div className="min-w-0">
                 <p>
-                  <span className="font-medium">{e.actorName ?? "A removed user"}</span> {actionText[e.action] ?? e.action}
+                  <span className="font-medium">{e.actorName ?? "A removed user"}</span>{" "}
+                  {actionText[e.action] ?? e.action}
                   {e.theaterId && names[e.theaterId] ? (
                     <span className="text-ink-2"> at {names[e.theaterId]}</span>
                   ) : null}
