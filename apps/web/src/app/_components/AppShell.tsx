@@ -146,6 +146,16 @@ function ShellSkeleton() {
 function TopBar() {
   const { me, theaters, theaterId, setTheaterId } = useShell();
   const pathname = usePathname();
+  if (me.mustChangePassword) {
+    // Nothing else is reachable until the password is set, so the bar stays empty.
+    return (
+      <header className="sticky top-0 z-40 border-b border-line bg-white">
+        <div className="flex h-14 items-center px-4 sm:px-5">
+          <span className="text-[14px] font-semibold tracking-[-0.01em]">Showtimes</span>
+        </div>
+      </header>
+    );
+  }
   const p = principalOf(me);
   const nav = [
     { href: "/", label: "Showtimes", show: true },
@@ -358,6 +368,7 @@ function ForcePasswordChange() {
         <input
           className={field}
           type="password"
+          aria-label="Temporary password"
           placeholder="Temporary password"
           autoComplete="current-password"
           value={currentPassword}
@@ -366,6 +377,7 @@ function ForcePasswordChange() {
         <input
           className={field}
           type="password"
+          aria-label="New password"
           placeholder="New password, 12+ characters"
           autoComplete="new-password"
           value={newPassword}

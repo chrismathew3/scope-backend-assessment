@@ -188,7 +188,7 @@ function Review({
   );
 
   const apply = useCallback(() => {
-    if (!open || commit.isPending || (largeArchive && !confirmLarge)) return;
+    if (!open || commit.isPending || httpStatusOf(commit.error) === 409 || (largeArchive && !confirmLarge)) return;
     commit.mutate({
       id: summary.id,
       confirmLargeArchive: confirmLarge,
@@ -237,6 +237,8 @@ function Review({
   }, [open, items, focus, toggle, apply]);
 
   const applied = summary.status === "applied";
+  // The server refused because the schedule moved on (or the preview expired): re-upload is the only way forward.
+  const staleNow = httpStatusOf(commit.error) === 409;
   const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
   const rejectedByYou = applied
     ? items.filter((i) => !(i.kind === "row" ? i.row.accepted : i.archive.accepted)).length
@@ -471,18 +473,24 @@ function Review({
               <span className="w-full text-[13px] text-remove sm:order-last">{errorMessage(commit.error)}</span>
             )}
             <div className="ml-auto flex items-center gap-4">
-              <button
-                type="button"
-                className={`${button.primary} h-10 px-5`}
-                disabled={commit.isPending || approvedCount === 0 || (largeArchive && !confirmLarge)}
-                onClick={apply}
-              >
-                {commit.isPending
-                  ? "Applying…"
-                  : approvedCount === 0
-                    ? "Nothing selected"
-                    : `Apply ${plural(approvedCount, "change")}`}
-              </button>
+              {staleNow ? (
+                <Link href="/imports/new" className={`${button.primary} h-10 px-5`}>
+                  Upload again
+                </Link>
+              ) : (
+                <button
+                  type="button"
+                  className={`${button.primary} h-10 px-5`}
+                  disabled={commit.isPending || approvedCount === 0 || (largeArchive && !confirmLarge)}
+                  onClick={apply}
+                >
+                  {commit.isPending
+                    ? "Applying…"
+                    : approvedCount === 0
+                      ? "Nothing selected"
+                      : `Apply ${plural(approvedCount, "change")}`}
+                </button>
+              )}
               <button
                 type="button"
                 className={button.link}
@@ -655,7 +663,14 @@ function Details({ item, timezone }: { item: Item; timezone?: string }) {
     );
   }
   const r = item.row;
+  // Postgres stores the row as jsonb (keys reordered), so put the usual columns back in file order.
+  const ORDER = ["theater_name", "movie_title", "auditorium", "start_time", "end_time", "language", "format", "rating", "last_updated"];
+  const rank = (k: string) => {
+    const i = ORDER.indexOf(k.toLowerCase());
+    return i === -1 ? ORDER.length : i;
+  };
   const rawLine = Object.entries(r.raw)
+    .sort(([a], [b]) => rank(a) - rank(b))
     .map(([k, v]) => `${k}: ${v.trim() === "" ? "(blank)" : v}`)
     .join("\n");
   return (

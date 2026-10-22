@@ -142,17 +142,17 @@ export function rulesExplanation(row: FinalRow, existingById: Map<string, Existi
         : "Repeats an earlier line (same film and start time), so it's skipped.";
     case "add":
       return v
-        ? `No showtime of "${v.movieTitle}" at ${formatLocal(v.startTime, timezone)} in the current schedule, so it's added as new.`
+        ? `Nothing in the schedule matches this film at ${formatLocal(v.startTime, timezone)}, so it's added as new.`
         : "Added as a new showtime.";
     case "unchanged":
       return "Already in the schedule exactly as listed. Only the feed's last-updated time is recorded.";
     case "update": {
+      // The screen already shows the change itself; this says why it's the same showtime.
       const s = row.showtimeId ? existingById.get(row.showtimeId) : undefined;
-      const changes = describeDiffs(row.diffs, timezone);
-      if (row.matchMethod === "reactivated") return `This showtime was archived and is back in the drop, so it's restored. ${changes}`.trim();
-      if (row.matchMethod === "fuzzy_title" && s) return `Matched "${s.movieTitle}" at the same start time by a similar title. ${changes}`.trim();
-      if (row.matchMethod === "moved") return `Same film, start time moved. ${changes}`.trim();
-      return `Matched on film and start time. ${changes}`.trim();
+      if (row.matchMethod === "reactivated") return "This showtime was archived and is back in the drop, so it's restored.";
+      if (row.matchMethod === "fuzzy_title" && s) return `Same start time and a near-identical title to "${s.movieTitle}".`;
+      if (row.matchMethod === "moved") return "Same film in the same theater, a short time from the stored start, so it's treated as moved.";
+      return "Same film and start time as the stored showtime.";
     }
   }
 }

@@ -1,7 +1,8 @@
 /**
- * Login throttling: 5 failed attempts per (IP, email) and 20 per IP within
- * 15 minutes. In-memory is fine for one API process; swap for Postgres or
- * Redis when running more than one.
+ * Login throttling: 5 failed attempts per (IP, email) within 15 minutes, plus a
+ * loose 100-per-IP ceiling against password spraying. The per-IP ceiling is high on
+ * purpose: a team behind one office IP shouldn't lock each other out with typos.
+ * In-memory is fine for one API process; swap for Postgres or Redis when running more than one.
  */
 const WINDOW_MS = 15 * 60 * 1000;
 const buckets = new Map<string, number[]>();
@@ -16,7 +17,7 @@ export function loginBlocked(ip: string | null, email: string): number | null {
   const now = Date.now();
   const pair = hits(`pair:${ip}:${email}`, now);
   const perIp = hits(`ip:${ip}`, now);
-  if (pair.length >= 5 || perIp.length >= 20) {
+  if (pair.length >= 5 || perIp.length >= 100) {
     const oldest = Math.min(...(pair.length >= 5 ? pair : perIp));
     return Math.ceil((oldest + WINDOW_MS - now) / 1000);
   }

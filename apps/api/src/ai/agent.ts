@@ -307,6 +307,17 @@ export async function runReconciliationAgent(resolved: ResolvedModel, input: Age
       });
       if (controller.signal.aborted) break;
     }
+    // Transient model or gateway errors are common enough to retry each failed batch once while time remains.
+    if (failed.length && !controller.signal.aborted && Date.now() - started < env.AI_TIMEOUT_MS * 0.6) {
+      const retry = failed.splice(0);
+      const settled = await Promise.allSettled(
+        retry.map((f) => runBatch(resolved, input, new Set(f.lines), controller.signal, trace, " (retry)")),
+      );
+      settled.forEach((r, j) => {
+        if (r.status === "fulfilled") results.push(r.value);
+        else failed.push({ lines: retry[j]!.lines, error: r.reason instanceof Error ? r.reason.message : "failed" });
+      });
+    }
     // Batches never started because of the timeout count as failed too.
     const done = new Set([...results.flatMap((r) => r.review.rows.map((x) => x.line)), ...failed.flatMap((f) => f.lines)]);
     const notRun = lines.filter((l) => !done.has(l));

@@ -57,10 +57,10 @@ export default function NewImportPage() {
 
   const send = (name: string, buffer: ArrayBuffer) => {
     if (!selected) return;
+    setFileName(name);
     if (buffer.byteLength === 0) return setLocalError("That file is empty.");
     if (buffer.byteLength > MAX_CSV_BYTES) return setLocalError("Files must be 3 MB or smaller (about 30,000 rows).");
     setLocalError(null);
-    setFileName(name);
     create.mutate({ theaterId: selected.id, filename: name, contentBase64: toBase64(buffer) });
   };
 
@@ -168,6 +168,14 @@ export default function NewImportPage() {
                   Columns like theater, title, auditorium, start and end time. Up to 3 MB.
                 </span>
               </button>
+              {error && (
+                <div role="alert" className="mt-4">
+                  <p className="text-[13px] font-medium text-remove">
+                    {fileName ? `${fileName} couldn't be imported` : "That file couldn't be read"}
+                  </p>
+                  <p className="mt-0.5 text-[13px] text-ink-2">{error}</p>
+                </div>
+              )}
               <input
                 ref={input}
                 type="file"
@@ -203,12 +211,6 @@ export default function NewImportPage() {
             </>
           )}
 
-          {error && (
-            <div role="alert" className="mt-6">
-              <p className="text-[13px] font-medium text-remove">That file couldn&apos;t be read</p>
-              <p className="mt-0.5 text-[13px] text-ink-2">{error}</p>
-            </div>
-          )}
         </>
       )}
       {theaterId === "all" && canImportHere === false && adminTheaters.length > 0 && null}

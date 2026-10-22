@@ -129,7 +129,7 @@ export const theaterMemberships = pgTable(
       .notNull()
       .references(() => theaters.id, { onDelete: "cascade" }),
     role: theaterRole("role").notNull(),
-    grantedBy: text("granted_by").references(() => users.id),
+    grantedBy: text("granted_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -283,7 +283,8 @@ export const auditLog = pgTable(
   "audit_log",
   {
     id: id(),
-    actorId: text("actor_id").references(() => users.id),
+    // Kept when a (demo) user is removed; the entry just loses its actor link.
+    actorId: text("actor_id").references(() => users.id, { onDelete: "set null" }),
     action: text("action").notNull(),
     entityType: text("entity_type").notNull(),
     entityId: text("entity_id").notNull(),

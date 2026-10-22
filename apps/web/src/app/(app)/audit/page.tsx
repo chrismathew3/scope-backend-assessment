@@ -113,7 +113,7 @@ export default function AuditPage() {
               <span className="tnum text-ink-2">{formatDateTime(e.createdAt)}</span>
               <div className="min-w-0">
                 <p>
-                  <span className="font-medium">{e.actorName ?? "System"}</span> {actionText[e.action] ?? e.action}
+                  <span className="font-medium">{e.actorName ?? "A removed user"}</span> {actionText[e.action] ?? e.action}
                   {e.theaterId && names[e.theaterId] ? (
                     <span className="text-ink-2"> at {names[e.theaterId]}</span>
                   ) : null}

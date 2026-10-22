@@ -71,7 +71,7 @@ export default function PeoplePage() {
           </p>
         </div>
         {manageable.length > 0 && !adding && (
-          <button className={button.primary} onClick={() => setAdding(true)}>
+          <button className={`${button.primary} shrink-0 whitespace-nowrap`} onClick={() => setAdding(true)}>
             Add person
           </button>
         )}

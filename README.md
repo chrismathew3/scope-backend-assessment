@@ -77,6 +77,7 @@ Open http://localhost:3000 and pick a role. The web app proxies `/trpc` and `/ap
 |---|---|
 | `bun run dev` | Web + API with reload |
 | `bun run test` | 113 unit tests: CSV cleaning, reconciliation, AI verifier (including injection cases), permission matrix |
+| `bun run --filter @scope/api test:e2e` | 17 end-to-end scenarios against the running stack with the real agent: every role's visibility, search, edits, both samples, approvals honoured, stale/discard/large-archive, prompt injection, bad files, a 5,000-row file, people and access rules, database invariants. Resets demo data. Point `E2E_API`, `MIGRATION_DATABASE_URL` and `E2E_APP_DB` at production to run it there. |
 | `bun run typecheck` / `lint` | `tsc` across packages / ESLint |
 | `bun run db:reset` | Rebuild the local database from scratch |
 | `bun apps/api/src/scripts/eval-agent.ts` | Compare models on both samples (accuracy, corrections, latency) |
@@ -94,7 +95,7 @@ Open http://localhost:3000 and pick a role. The web app proxies `/trpc` and `/ap
 - **Access.** A role per theater (admin or viewer) plus a global super admin. Rules live in one file (`packages/shared/src/permissions.ts`). Viewers only receive public fields of active showtimes. Postgres row-level security backs this up, because the app connects as a non-owner role.
 - **Search at scale.** A trigram GIN index on a normalized title key gives typo-tolerant search ("oppenhiemer" finds Oppenheimer), with filters, sorts and keyset pagination.
 - **Database.** Neon Postgres provisioned through Vercel. The shared Supabase URL in the original `.env.example` was not used: it is shared across candidates, and our migrations create roles and policies.
-- **Login.** The brief says auth isn't required. A one-click role picker is kept so reviewers can see admin, viewer, mixed and super-admin views. Demo accounts can't be locked out. Signed in as **Sam Super**, **Reset demo data** (user menu) restores the seed for the next reviewer.
+- **Login.** The brief says auth isn't required. A one-click role picker is kept so reviewers can see admin, viewer, mixed and super-admin views. Demo accounts can't be locked out. Signed in as **Sam Super**, **Reset demo data** (user menu) restores the seed and removes people created during the demo, so the next reviewer starts clean.
 - **Upload size.** CSVs up to 3 MB (about 30,000 rows), because Vercel caps request bodies at 4.5 MB. Beyond that, the next step would be direct upload to Blob storage.
 
 ## Environment variables

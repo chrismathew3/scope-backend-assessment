@@ -6,13 +6,14 @@
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test src",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "bun src/db/migrate.ts",
     "db:seed": "bun src/db/seed.ts",
     "db:seed:scale": "bun src/db/seed-scale.ts",
     "db:reset": "bun src/db/reset.ts && bun src/db/migrate.ts && bun src/db/seed.ts",
-    "user:create-super-admin": "bun src/scripts/create-super-admin.ts"
+    "user:create-super-admin": "bun src/scripts/create-super-admin.ts",
+    "test:e2e": "E2E=1 bun test test/e2e --timeout 120000"
   },
   "dependencies": {
     "@ai-sdk/google": "^4",

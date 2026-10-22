@@ -2,9 +2,9 @@
 
 export const button = {
   primary:
-    "inline-flex h-9 items-center justify-center gap-2 rounded-md bg-ink px-4 text-[13px] font-medium text-white transition-colors duration-150 hover:bg-[#2a2a2c] disabled:cursor-not-allowed disabled:bg-[#b9b9bb]",
+    "inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-md bg-ink whitespace-nowrap px-4 text-[13px] font-medium text-white transition-colors duration-150 hover:bg-[#2a2a2c] disabled:cursor-not-allowed disabled:bg-[#b9b9bb]",
   secondary:
-    "inline-flex h-9 items-center justify-center gap-2 rounded-md border border-line-strong bg-white px-3.5 text-[13px] font-medium text-ink transition-colors duration-150 hover:bg-wash disabled:cursor-not-allowed disabled:opacity-50",
+    "inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-md border border-line-strong whitespace-nowrap bg-white px-3.5 text-[13px] font-medium text-ink transition-colors duration-150 hover:bg-wash disabled:cursor-not-allowed disabled:opacity-50",
   quiet:
     "inline-flex h-9 items-center justify-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium text-ink-2 transition-colors duration-150 hover:bg-wash hover:text-ink disabled:cursor-not-allowed disabled:opacity-50",
   link: "text-[13px] font-medium text-ink-2 underline-offset-4 transition-colors hover:text-ink hover:underline disabled:opacity-50",
