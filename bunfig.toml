@@ -1,0 +1,3 @@
+[install]
+# Next.js tooling (eslint-config-next) expects npm-style hoisted node_modules.
+linker = "hoisted"

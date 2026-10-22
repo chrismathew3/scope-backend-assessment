@@ -1,0 +1,39 @@
+{
+  "name": "@scope/api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "bun src/db/migrate.ts",
+    "db:seed": "bun src/db/seed.ts",
+    "db:seed:scale": "bun src/db/seed-scale.ts",
+    "db:reset": "bun src/db/reset.ts && bun src/db/migrate.ts && bun src/db/seed.ts",
+    "user:create-super-admin": "bun src/scripts/create-super-admin.ts"
+  },
+  "dependencies": {
+    "@hono/trpc-server": "^0.4.2",
+    "@scalar/hono-api-reference": "^0.12.13",
+    "@scope/shared": "workspace:*",
+    "@trpc/server": "^11.19.0",
+    "csv-parse": "^7.0.3",
+    "drizzle-orm": "0.45.4",
+    "hono": "^4.13.13",
+    "postgres": "^3.4.9",
+    "trpc-to-openapi": "^3.3.3",
+    "zod": "^4.6.7",
+    "zod-openapi": "^6.0.2"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3",
+    "drizzle-kit": "0.31.11",
+    "typescript": "~5.9"
+  },
+  "exports": {
+    "./router": "./src/trpc/router.ts",
+    "./app": "./src/app.ts"
+  }
+}
