@@ -16,7 +16,7 @@ export const app = new Hono();
 
 app.use(logger());
 app.use(secureHeaders({ crossOriginResourcePolicy: false }));
-app.use(bodyLimit({ maxSize: 30 * 1024 * 1024 })); // 20 MB CSV + base64 overhead
+app.use(bodyLimit({ maxSize: 5 * 1024 * 1024 })); // 3 MB CSV + base64 overhead
 
 /**
  * CSRF guard. Cookies are SameSite=Lax, and on top of that any state-changing

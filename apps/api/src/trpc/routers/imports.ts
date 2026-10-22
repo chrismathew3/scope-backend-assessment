@@ -43,7 +43,7 @@ export const importsRouter = router({
     .meta({ openapi: { method: "POST", path: "/imports/{id}/apply", tags, protect: true } })
     .input(ImportApplyInput)
     .output(ImportDetail)
-    .mutation(({ ctx, input }) => applyImport(ctx, input.id, input.confirmLargeArchive)),
+    .mutation(({ ctx, input }) => applyImport(ctx, input.id, input.confirmLargeArchive, input.decisions)),
 
   discard: authedProcedure
     .meta({ openapi: { method: "DELETE", path: "/imports/{id}", tags, protect: true } })

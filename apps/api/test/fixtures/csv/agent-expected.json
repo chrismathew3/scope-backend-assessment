@@ -1,0 +1,26 @@
+{
+  "new-drop": {
+    "rows": {
+      "2": { "outcome": "update", "showtimeId": "st-dt-001" },
+      "3": { "outcome": "update", "showtimeId": "st-dt-002" },
+      "4": { "outcome": "update", "showtimeId": "st-dt-003" },
+      "5": { "outcome": "unchanged", "showtimeId": "st-dt-004" },
+      "6": { "outcome": "add", "showtimeId": null },
+      "7": { "outcome": "duplicate", "showtimeId": null }
+    },
+    "archives": ["st-dt-007"]
+  },
+  "tricky-drop": {
+    "rows": {
+      "2": { "outcome": "update", "showtimeId": "st-dt-001" },
+      "3": { "outcome": "update", "showtimeId": "st-dt-002" },
+      "4": { "outcome": "update", "showtimeId": "st-dt-003" },
+      "5": { "outcome": "unchanged", "showtimeId": "st-dt-004" },
+      "6": { "outcome": "update", "showtimeId": "st-dt-007" },
+      "7": { "outcome": "update", "showtimeId": "st-dt-005" },
+      "8": { "outcome": "duplicate", "showtimeId": null },
+      "9": { "outcome": "rejected", "showtimeId": null }
+    },
+    "archives": []
+  }
+}

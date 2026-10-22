@@ -170,7 +170,8 @@ export const ArchiveAllOutput = z.object({ archived: z.number().int() });
 
 /* ───────── imports ───────── */
 
-export const MAX_CSV_BYTES = 20 * 1024 * 1024;
+/** Vercel caps request bodies at 4.5 MB; base64 adds a third, so 3 MB of CSV is the safe ceiling. */
+export const MAX_CSV_BYTES = 3 * 1024 * 1024;
 
 export const ImportCreateInput = z.object({
   theaterId: id,
@@ -181,18 +182,33 @@ export const ImportCreateInput = z.object({
    */
   contentBase64: z
     .string()
-    .max(Math.ceil((MAX_CSV_BYTES * 4) / 3) + 4, "File is larger than 20 MB")
+    .max(Math.ceil((MAX_CSV_BYTES * 4) / 3) + 4, "File is larger than 3 MB")
     .regex(/^[A-Za-z0-9+/]*={0,2}$/, "Not base64"),
 });
 
 export const FieldDiff = z.object({ field: z.string(), oldValue: z.string(), newValue: z.string() });
 export const RowIssue = z.object({ column: z.string(), message: z.string() });
 
+/** Who made a row's final call: the LLM agent (verified by code) or the deterministic rules. */
+export const DecisionSource = z.enum(["ai", "rules"]);
+export type DecisionSource = z.infer<typeof DecisionSource>;
+
 export const ImportRowView = z.object({
   lineNumber: z.number().int(),
   outcome: ImportRowOutcome,
   showtimeId: z.string().nullable(),
   matchMethod: z.string().nullable(),
+  /** Plain-language reason for the proposed action (from the agent, or the rules fallback). */
+  explanation: z.string().nullable(),
+  /** 0..1, null when the rules decided. */
+  confidence: z.number().min(0).max(1).nullable(),
+  decisionSource: DecisionSource,
+  /** True when the agent's call differs from what the deterministic rules alone would do. */
+  aiOverrodeRules: z.boolean(),
+  /** For duplicates: the line this row repeats. */
+  duplicateOf: z.number().int().nullable(),
+  /** The reviewer's choice. Only accepted add/update rows are applied. */
+  accepted: z.boolean(),
   movieTitle: z.string().nullable(),
   auditorium: z.string().nullable(),
   startTime: z.string().nullable(),
@@ -210,7 +226,36 @@ export const ImportArchiveView = z.object({
   auditorium: z.string(),
   startTime: isoDate,
   endTime: isoDate,
+  explanation: z.string().nullable(),
+  decisionSource: DecisionSource,
+  /** The reviewer's choice. Unchecked archives leave the showtime as it is. */
+  accepted: z.boolean(),
 });
+export type ImportArchiveView = z.infer<typeof ImportArchiveView>;
+
+export const AgentTraceStep = z.object({
+  /** "search" = the agent queried the schedule; "submit" = it handed in its review; "note" = system note. */
+  kind: z.enum(["search", "submit", "note"]),
+  label: z.string(),
+  detail: z.string().nullable(),
+});
+export type AgentTraceStep = z.infer<typeof AgentTraceStep>;
+
+export const AgentRun = z.object({
+  /** ok: agent decided (verified). fallback: agent failed or was unavailable, rules decided. off: no model configured. */
+  status: z.enum(["ok", "fallback", "off"]),
+  model: z.string().nullable(),
+  /** The agent's own 1-3 sentence summary of the drop. */
+  summary: z.string().nullable(),
+  error: z.string().nullable(),
+  durationMs: z.number().int().nullable(),
+  /** Decisions the agent made that the rules alone would not have. */
+  overrides: z.number().int(),
+  /** Agent decisions the verifier rejected and replaced with the rules' answer. */
+  corrections: z.number().int(),
+  trace: z.array(AgentTraceStep),
+});
+export type AgentRun = z.infer<typeof AgentRun>;
 
 export const ImportSummary = z.object({
   id,
@@ -232,6 +277,7 @@ export const ImportSummary = z.object({
   /** File-level notes: encoding fallback, delimiter, ignored columns, large archive, same file as before. */
   notices: z.array(z.string()),
   activeBefore: z.number().int(),
+  agent: AgentRun,
 });
 export type ImportSummary = z.infer<typeof ImportSummary>;
 
@@ -247,7 +293,19 @@ export const ImportApplyInput = z.object({
   id,
   /** Required when the import archives more than half of the active schedule. */
   confirmLargeArchive: z.boolean().default(false),
+  /**
+   * The reviewer's per-action choices. Omitted entries keep the proposal's default (accepted).
+   * Only add/update rows and archive proposals can be toggled.
+   */
+  decisions: z
+    .object({
+      rows: z.array(z.object({ lineNumber: z.number().int().positive(), accepted: z.boolean() })).max(200_000),
+      archives: z.array(z.object({ showtimeId: id, accepted: z.boolean() })).max(200_000),
+    })
+    .default({ rows: [], archives: [] }),
 });
+
+export const DemoResetOutput = z.object({ showtimes: z.number().int(), imports: z.number().int() });
 
 /* ───────── users & memberships ───────── */
 

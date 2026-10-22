@@ -1,27 +1,50 @@
-/** Shared class strings so every control looks the same. */
-export const inputClass =
-  "w-full rounded-lg border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-white placeholder:text-gray-500 focus:border-purple-500 focus:outline-hidden focus:ring-2 focus:ring-purple-500 disabled:opacity-50";
+/** Shared class strings: one vocabulary for every control. */
 
-export const smallSelectClass =
-  "rounded border border-gray-600 bg-gray-800 px-2 py-1 text-xs text-white focus:border-purple-500 focus:outline-hidden focus:ring-2 focus:ring-purple-500 disabled:opacity-50";
+export const button = {
+  primary:
+    "inline-flex h-9 items-center justify-center gap-2 rounded-md bg-ink px-4 text-[13px] font-medium text-white transition-colors duration-150 hover:bg-[#2a2a2c] disabled:cursor-not-allowed disabled:bg-[#b9b9bb]",
+  secondary:
+    "inline-flex h-9 items-center justify-center gap-2 rounded-md border border-line-strong bg-white px-3.5 text-[13px] font-medium text-ink transition-colors duration-150 hover:bg-wash disabled:cursor-not-allowed disabled:opacity-50",
+  quiet:
+    "inline-flex h-9 items-center justify-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium text-ink-2 transition-colors duration-150 hover:bg-wash hover:text-ink disabled:cursor-not-allowed disabled:opacity-50",
+  link: "text-[13px] font-medium text-ink-2 underline-offset-4 transition-colors hover:text-ink hover:underline disabled:opacity-50",
+};
 
-export const primaryButton =
-  "rounded-lg bg-purple-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-50";
+export const field =
+  "h-9 w-full rounded-md border border-line-strong bg-white px-3 text-[13px] text-ink placeholder:text-ink-3 transition-colors duration-150 hover:border-[#c8c8c8] focus:border-ink focus:outline-none disabled:opacity-50";
 
-export const secondaryButton =
-  "rounded-lg border border-gray-600 px-4 py-2 text-sm font-medium text-gray-300 transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50";
+export const selectField = `${field} appearance-none bg-[length:12px] bg-[right_10px_center] bg-no-repeat pr-8 bg-[url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%238b8f96' stroke-width='1.5'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E")]`;
 
-export const dangerButton =
-  "rounded-lg border border-red-600 px-5 py-2.5 text-sm font-semibold text-red-400 transition hover:bg-red-950 disabled:cursor-not-allowed disabled:opacity-50";
+/** Borderless select used inside table rows. */
+export const inlineSelect =
+  "-ml-1.5 h-7 cursor-pointer appearance-none rounded-md bg-transparent px-1.5 pr-5 text-[13px] text-ink transition-colors hover:bg-wash focus:bg-wash focus:outline-none disabled:cursor-wait bg-[length:10px] bg-[right_4px_center] bg-no-repeat bg-[url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%238b8f96' stroke-width='1.5'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E\")]";
 
-export const panelClass = "rounded-lg border border-gray-700 bg-gray-900";
+export const page = "mx-auto w-full px-5 sm:px-8";
+/** The one reading column every focused page uses (the showtimes table runs wider). */
+export const column = "mx-auto w-full max-w-[680px] px-5 sm:px-8";
+export const h1 = "text-[28px] leading-[1.12] font-bold tracking-[-0.03em] text-balance sm:text-[34px]";
+export const lede = "mt-2 text-[15px] leading-relaxed text-ink-2 text-pretty";
+
+export function formatTime(iso: string, timeZone?: string) {
+  return new Date(iso).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone });
+}
+
+export function formatDay(iso: string, timeZone?: string) {
+  return new Date(iso).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone });
+}
 
 export function formatDateTime(iso: string, timeZone?: string) {
-  return new Date(iso).toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZone,
-  });
+  return `${formatDay(iso, timeZone)}, ${formatTime(iso, timeZone)}`;
+}
+
+export function relativeTime(iso: string) {
+  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (diff < 45) return "just now";
+  if (diff < 3600) return `${Math.round(diff / 60)} min ago`;
+  if (diff < 86400) return `${Math.round(diff / 3600)} h ago`;
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+export function plural(n: number, one: string, many = `${one}s`) {
+  return `${n.toLocaleString()} ${n === 1 ? one : many}`;
 }

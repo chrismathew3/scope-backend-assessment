@@ -1,6 +1,7 @@
 import type { inferRouterInputs, inferRouterOutputs } from "@trpc/server";
 import { router } from "./init";
 import { auditRouter } from "./routers/audit";
+import { demoRouter } from "./routers/demo";
 import { authRouter, meRouter } from "./routers/auth";
 import { importsRouter } from "./routers/imports";
 import { showtimesRouter } from "./routers/showtimes";
@@ -16,6 +17,7 @@ export const appRouter = router({
   users: usersRouter,
   memberships: membershipsRouter,
   audit: auditRouter,
+  demo: demoRouter,
 });
 
 export type AppRouter = typeof appRouter;

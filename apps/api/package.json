@@ -15,10 +15,12 @@
     "user:create-super-admin": "bun src/scripts/create-super-admin.ts"
   },
   "dependencies": {
+    "@ai-sdk/google": "^4",
     "@hono/trpc-server": "^0.4.2",
     "@scalar/hono-api-reference": "^0.12.13",
     "@scope/shared": "workspace:*",
     "@trpc/server": "^11.19.0",
+    "ai": "^7",
     "csv-parse": "^7.0.3",
     "drizzle-orm": "0.45.4",
     "hono": "^4.13.13",

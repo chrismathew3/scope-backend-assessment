@@ -1,24 +1,25 @@
 import "~/styles/globals.css";
 
 import { type Metadata } from "next";
-import { Geist } from "next/font/google";
+import { Inter } from "next/font/google";
 import { Providers } from "~/lib/trpc";
 
 export const metadata: Metadata = {
-  title: "Theater Showtimes Manager",
-  description: "Manage theater showtimes and schedules.",
+  title: "Showtimes",
+  description: "Theater schedule console with AI-reviewed partner imports.",
   icons: [{ rel: "icon", url: "/favicon.ico" }],
 };
 
-const geist = Geist({
+const inter = Inter({
   subsets: ["latin"],
-  variable: "--font-geist-sans",
+  variable: "--font-inter",
+  display: "swap",
 });
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${geist.variable}`}>
-      <body className="bg-night-950 font-sans text-white antialiased">
+    <html lang="en" className={inter.variable}>
+      <body className="min-h-dvh font-sans text-[14px] leading-[1.5]">
         <Providers>{children}</Providers>
       </body>
     </html>

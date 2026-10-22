@@ -1,16 +1,30 @@
 /**
- * CSV import: upload -> clean -> reconcile -> preview (persisted) -> apply.
- * Parsing and matching live in ../csv (pure, unit tested). This file does the
- * database side: loading what to compare against, storing the preview, and
- * applying it in one transaction.
+ * CSV import: upload -> clean -> rules -> agent -> verify -> preview (persisted)
+ * -> reviewer approves/rejects each action -> apply.
+ *
+ * Parsing and matching rules live in ../csv, the agent in ../ai/agent.ts, and
+ * the checks on the agent's answer in ../ai/verify.ts. This file does the
+ * database side.
  */
 import { createHash } from "node:crypto";
-import type { ImportDetail, ImportSummary } from "@scope/shared";
+import type { AgentRun, ImportDetail, ImportSummary } from "@scope/shared";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
-import { CsvFileError, type ExistingShowtime, parseShowtimeCsv, reconcile, type ReconciledRow } from "../csv";
+import { runReconciliationAgent } from "../ai/agent";
+import { resolveModel } from "../ai/model";
+import { type FinalRow, mergeAgentReview } from "../ai/verify";
+import { CsvFileError, type ExistingShowtime, parseShowtimeCsv, reconcile } from "../csv";
 import type { Tx } from "../db/client";
-import { imports, importRows, type NormalizedRow, showtimes, theaters, users } from "../db/schema";
+import {
+  AGENT_OFF,
+  type ArchiveProposal,
+  imports,
+  importRows,
+  type NormalizedRow,
+  showtimes,
+  theaters,
+  users,
+} from "../db/schema";
 import type { AuthedContext } from "../trpc/init";
 import { audit } from "./audit";
 
@@ -24,7 +38,7 @@ function chunks<T>(items: T[], size = CHUNK): T[][] {
   return out;
 }
 
-function normalizedOf(row: ReconciledRow): NormalizedRow | null {
+function normalizedOf(row: FinalRow): NormalizedRow | null {
   const v = row.value;
   if (!v) return null;
   return {
@@ -101,10 +115,37 @@ export async function createImport(
 
   const startTimes = parsed.rows.flatMap((r) => (r.value ? [r.value.startTime] : []));
   const existing = await loadExisting(tx, theater.id, startTimes);
-  const result = reconcile(parsed.rows, existing);
+  const rules = reconcile(parsed.rows, existing);
   const activeBefore = existing.filter((s) => s.status === "active").length;
 
+  // The agent runs before any write, so the transaction holds no row locks while it thinks.
+  const resolved = resolveModel();
+  const outcome = resolved
+    ? await runReconciliationAgent(resolved, { theater: { name: theater.name, timezone: theater.timezone }, reconciled: rules, existing })
+    : null;
+  const merged = mergeAgentReview(rules, outcome?.review ?? null, existing, { timezone: theater.timezone });
+
+  const agent: AgentRun = outcome
+    ? {
+        status: outcome.status,
+        model: resolved!.label,
+        summary: outcome.summary,
+        error: outcome.error,
+        durationMs: outcome.durationMs,
+        overrides: merged.overrides,
+        corrections: merged.corrections,
+        trace: outcome.trace,
+      }
+    : { ...AGENT_OFF, trace: [{ kind: "note", label: "No AI model is configured, so the rules decided", detail: null }] };
+
   const notices = [...parsed.notices];
+  // When every dated row is in the past (an old sample, a back-fill), say it once instead of on every row.
+  const PAST = "Start time is in the past.";
+  const dated = merged.rows.filter((r) => r.value);
+  if (dated.length > 1 && dated.every((r) => r.warnings.some((w) => w.message === PAST))) {
+    for (const r of merged.rows) r.warnings = r.warnings.filter((w) => w.message !== PAST);
+    notices.push("Every showtime in this file is in the past.");
+  }
   const sha = createHash("sha256").update(bytes).digest("hex");
   const [sameFile] = await tx
     .select({ appliedAt: imports.appliedAt })
@@ -115,11 +156,18 @@ export async function createImport(
   if (sameFile?.appliedAt) {
     notices.push(`This exact file was already applied on ${sameFile.appliedAt.toISOString().slice(0, 10)}.`);
   }
-  if (activeBefore > 0 && result.counts.archive > activeBefore / 2) {
+  if (activeBefore > 0 && merged.counts.archive > activeBefore / 2) {
     notices.push(
-      `This drop archives ${result.counts.archive} of ${activeBefore} active showtimes. You'll be asked to confirm.`,
+      `This drop would archive ${merged.counts.archive} of ${activeBefore} active showtimes. You'll be asked to confirm.`,
     );
   }
+
+  const archiveProposals: ArchiveProposal[] = merged.archives.map((a) => ({
+    showtimeId: a.showtime.id,
+    explanation: a.explanation,
+    decisionSource: a.decisionSource,
+    accepted: true,
+  }));
 
   const [created] = await tx
     .insert(imports)
@@ -130,21 +178,23 @@ export async function createImport(
       fileSha256: sha,
       byteSize: bytes.byteLength,
       baseScheduleVersion: theater.scheduleVersion,
-      totalRows: result.rows.length,
-      addCount: result.counts.add,
-      updateCount: result.counts.update,
-      unchangedCount: result.counts.unchanged,
-      archiveCount: result.counts.archive,
-      duplicateCount: result.counts.duplicate,
-      rejectedCount: result.counts.rejected,
+      totalRows: merged.rows.length,
+      addCount: merged.counts.add,
+      updateCount: merged.counts.update,
+      unchangedCount: merged.counts.unchanged,
+      archiveCount: merged.counts.archive,
+      duplicateCount: merged.counts.duplicate,
+      rejectedCount: merged.counts.rejected,
       activeBefore,
       notices,
-      archiveShowtimeIds: result.archives.map((a) => a.id),
+      archiveShowtimeIds: archiveProposals.map((a) => a.showtimeId),
+      archiveProposals,
+      agent,
       expiresAt: new Date(Date.now() + PREVIEW_TTL_MS),
     })
     .returning();
 
-  for (const part of chunks(result.rows)) {
+  for (const part of chunks(merged.rows)) {
     await tx.insert(importRows).values(
       part.map((r) => ({
         importId: created!.id,
@@ -157,6 +207,12 @@ export async function createImport(
         diffs: r.diffs,
         errors: r.errors,
         warnings: r.warnings,
+        explanation: r.explanation,
+        confidence: r.confidence,
+        decisionSource: r.decisionSource,
+        aiOverrodeRules: r.aiOverrodeRules,
+        duplicateOf: r.duplicateOf,
+        accepted: true,
       })),
     );
   }
@@ -165,7 +221,14 @@ export async function createImport(
     entityType: "import",
     entityId: created!.id,
     theaterId: theater.id,
-    after: { filename: input.filename, ...result.counts },
+    after: {
+      filename: input.filename,
+      ...merged.counts,
+      agent: agent.status,
+      model: agent.model,
+      overrides: agent.overrides,
+      corrections: agent.corrections,
+    },
   });
   return getImportDetail(ctx, created!.id);
 }
@@ -205,6 +268,7 @@ function summaryOf(row: Awaited<ReturnType<typeof loadImport>>): ImportSummary {
     rejectedCount: i.rejectedCount,
     notices: i.notices,
     activeBefore: i.activeBefore,
+    agent: i.agent ?? AGENT_OFF,
   };
 }
 
@@ -216,8 +280,8 @@ export async function getImportDetail(ctx: AuthedContext, id: string): Promise<I
     .where(eq(importRows.importId, id))
     .orderBy(asc(importRows.lineNumber))
     .limit(DETAIL_ROW_CAP);
-  const archiveIds = row.i.archiveShowtimeIds.slice(0, DETAIL_ROW_CAP);
-  const archived = archiveIds.length
+  const proposals = row.i.archiveProposals.slice(0, DETAIL_ROW_CAP);
+  const archived = proposals.length
     ? await ctx.tx
         .select({
           id: showtimes.id,
@@ -227,9 +291,15 @@ export async function getImportDetail(ctx: AuthedContext, id: string): Promise<I
           endTime: showtimes.endTime,
         })
         .from(showtimes)
-        .where(inArray(showtimes.id, archiveIds))
+        .where(
+          inArray(
+            showtimes.id,
+            proposals.map((p) => p.showtimeId),
+          ),
+        )
         .orderBy(asc(showtimes.startTime))
     : [];
+  const proposalById = new Map(proposals.map((p) => [p.showtimeId, p]));
   return {
     summary: summaryOf(row),
     rows: rows.map((r) => ({
@@ -237,6 +307,12 @@ export async function getImportDetail(ctx: AuthedContext, id: string): Promise<I
       outcome: r.outcome,
       showtimeId: r.showtimeId,
       matchMethod: r.matchMethod,
+      explanation: r.explanation,
+      confidence: r.confidence,
+      decisionSource: r.decisionSource,
+      aiOverrodeRules: r.aiOverrodeRules,
+      duplicateOf: r.duplicateOf,
+      accepted: r.accepted,
       movieTitle: r.normalized?.movieTitle ?? null,
       auditorium: r.normalized?.auditorium ?? null,
       startTime: r.normalized?.startTime ?? null,
@@ -246,13 +322,19 @@ export async function getImportDetail(ctx: AuthedContext, id: string): Promise<I
       warnings: r.warnings,
       raw: r.raw,
     })),
-    archives: archived.map((a) => ({
-      showtimeId: a.id,
-      movieTitle: a.movieTitle,
-      auditorium: a.auditorium,
-      startTime: a.startTime.toISOString(),
-      endTime: a.endTime.toISOString(),
-    })),
+    archives: archived.map((a) => {
+      const p = proposalById.get(a.id)!;
+      return {
+        showtimeId: a.id,
+        movieTitle: a.movieTitle,
+        auditorium: a.auditorium,
+        startTime: a.startTime.toISOString(),
+        endTime: a.endTime.toISOString(),
+        explanation: p.explanation,
+        decisionSource: p.decisionSource,
+        accepted: p.accepted,
+      };
+    }),
   };
 }
 
@@ -278,7 +360,29 @@ export async function discardImport(ctx: AuthedContext, id: string) {
   return getImportDetail(ctx, id);
 }
 
-export async function applyImport(ctx: AuthedContext, id: string, confirmLargeArchive: boolean) {
+/** Turns a unique-index violation into a sentence naming the film and time. */
+function conflictMessage(e: unknown, timezone: string): string | null {
+  const err = e as { code?: string; detail?: string; cause?: { code?: string; detail?: string } };
+  const code = err.code ?? err.cause?.code;
+  if (code !== "23505") return null;
+  const detail = err.detail ?? err.cause?.detail ?? "";
+  const m = /=\([^,]+, (.+), (\d{4}-\d{2}-\d{2} [\d:.+-]+)\)/.exec(detail);
+  if (m) {
+    const when = new Date(m[2]!.replace(" ", "T").replace(/([+-]\d{2})$/, "$1:00"));
+    const at = Number.isNaN(when.getTime())
+      ? m[2]
+      : when.toLocaleString("en-US", { timeZone: timezone, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    return `Applying would leave two active showtimes of "${m[1]}" at ${at}. Approve the archive of the old one, or reject the new one. Nothing was changed.`;
+  }
+  return "Applying would leave two active showtimes for the same film and start time. Nothing was changed.";
+}
+
+export async function applyImport(
+  ctx: AuthedContext,
+  id: string,
+  confirmLargeArchive: boolean,
+  decisions: { rows: { lineNumber: number; accepted: boolean }[]; archives: { showtimeId: string; accepted: boolean }[] },
+) {
   const { tx } = ctx;
   const first = await loadImport(tx, id);
   const theaterId = first.i.theaterId;
@@ -286,6 +390,8 @@ export async function applyImport(ctx: AuthedContext, id: string, confirmLargeAr
   await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${"import:" + theaterId}))`);
   const row = await loadImport(tx, id);
   const imp = row.i;
+  const [theater] = await tx.select({ timezone: theaters.timezone }).from(theaters).where(eq(theaters.id, theaterId));
+  const timezone = theater?.timezone ?? "UTC";
 
   if (imp.status === "applied") return getImportDetail(ctx, id); // idempotent
   if (imp.status !== "previewed") {
@@ -300,63 +406,90 @@ export async function applyImport(ctx: AuthedContext, id: string, confirmLargeAr
       message: "The schedule changed after this preview was made. Upload the file again to see current changes.",
     });
   }
-  if (imp.activeBefore > 0 && imp.archiveCount > imp.activeBefore / 2 && !confirmLargeArchive) {
+
+  // 1. Record the reviewer's choices. Only add/update rows and archives can be toggled.
+  const rowChoice = new Map(decisions.rows.map((d) => [d.lineNumber, d.accepted]));
+  const allRows = await tx.select().from(importRows).where(eq(importRows.importId, id));
+  const toggleable = allRows.filter((r) => r.outcome === "add" || r.outcome === "update");
+  const rejectLines = toggleable.filter((r) => rowChoice.get(r.lineNumber) === false).map((r) => r.lineNumber);
+  const acceptLines = toggleable.filter((r) => rowChoice.get(r.lineNumber) === true && !r.accepted).map((r) => r.lineNumber);
+  for (const part of chunks(rejectLines)) {
+    await tx
+      .update(importRows)
+      .set({ accepted: false })
+      .where(and(eq(importRows.importId, id), inArray(importRows.lineNumber, part)));
+  }
+  for (const part of chunks(acceptLines)) {
+    await tx
+      .update(importRows)
+      .set({ accepted: true })
+      .where(and(eq(importRows.importId, id), inArray(importRows.lineNumber, part)));
+  }
+  const archiveChoice = new Map(decisions.archives.map((d) => [d.showtimeId, d.accepted]));
+  const proposals = imp.archiveProposals.map((p) => ({ ...p, accepted: archiveChoice.get(p.showtimeId) ?? p.accepted }));
+  const acceptedArchives = proposals.filter((p) => p.accepted).map((p) => p.showtimeId);
+  const rejectedLineSet = new Set(rejectLines);
+
+  if (imp.activeBefore > 0 && acceptedArchives.length > imp.activeBefore / 2 && !confirmLargeArchive) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: `This archives ${imp.archiveCount} of ${imp.activeBefore} active showtimes. Confirm to continue.`,
+      message: `This archives ${acceptedArchives.length} of ${imp.activeBefore} active showtimes. Confirm to continue.`,
     });
   }
 
   const now = new Date();
-  // 1. Archive first so updated/added rows never collide with rows on their way out.
-  for (const part of chunks(imp.archiveShowtimeIds)) {
-    await tx
-      .update(showtimes)
-      .set({ status: "archived", archivedAt: now, version: sql`${showtimes.version} + 1`, lastImportId: id })
-      .where(and(inArray(showtimes.id, part), ne(showtimes.status, "archived")));
-  }
-
-  const rows = await tx
-    .select()
-    .from(importRows)
-    .where(and(eq(importRows.importId, id), inArray(importRows.outcome, ["add", "update", "unchanged"])));
-
   try {
-    // 2. Updates (incl. reactivations) and unchanged rows, set-based via jsonb_to_recordset.
-    const changes = rows.filter((r) => r.outcome !== "add" && r.showtimeId && r.normalized);
-    for (const part of chunks(changes)) {
+    // 2. Archive first, so moved, renamed or added rows never collide with rows on their way out.
+    for (const part of chunks(acceptedArchives)) {
+      await tx
+        .update(showtimes)
+        .set({ status: "archived", archivedAt: now, version: sql`${showtimes.version} + 1`, lastImportId: id })
+        .where(and(inArray(showtimes.id, part), eq(showtimes.theaterId, theaterId), ne(showtimes.status, "archived")));
+    }
+
+    // 3. Approved updates (incl. moved and restored showtimes) and unchanged rows, set-based.
+    const changes = allRows.filter(
+      (r) =>
+        (r.outcome === "update" && !rejectedLineSet.has(r.lineNumber) && (rowChoice.get(r.lineNumber) ?? r.accepted)) ||
+        r.outcome === "unchanged",
+    );
+    for (const part of chunks(changes.filter((r) => r.showtimeId && r.normalized))) {
       const payload = part.map((r) => ({
         id: r.showtimeId,
         changed: r.outcome === "update",
-        reactivate: r.matchMethod === "reactivated",
+        reactivate: r.diffs.some((d) => d.field === "status" && d.oldValue === "archived"),
         ...r.normalized,
       }));
       await tx.execute(sql`
         update showtime s set
-          movie_title      = case when v.changed then v."movieTitle" else s.movie_title end,
-          movie_title_key  = case when v.changed then v."movieTitleKey" else s.movie_title_key end,
-          auditorium       = case when v.changed then v.auditorium else s.auditorium end,
-          auditorium_key   = case when v.changed then v."auditoriumKey" else s.auditorium_key end,
-          end_time         = case when v.changed then v."endTime" else s.end_time end,
-          language         = case when v.changed then v.language else s.language end,
-          format           = case when v.changed then v.format else s.format end,
-          rating           = case when v.changed then v.rating else s.rating end,
-          status           = case when v.reactivate then 'active'::showtime_status else s.status end,
-          archived_at      = case when v.reactivate then null else s.archived_at end,
+          movie_title       = case when v.changed then v."movieTitle" else s.movie_title end,
+          movie_title_key   = case when v.changed then v."movieTitleKey" else s.movie_title_key end,
+          auditorium        = case when v.changed then v.auditorium else s.auditorium end,
+          auditorium_key    = case when v.changed then v."auditoriumKey" else s.auditorium_key end,
+          start_time        = case when v.changed then v."startTime" else s.start_time end,
+          end_time          = case when v.changed then v."endTime" else s.end_time end,
+          language          = case when v.changed then v.language else s.language end,
+          format            = case when v.changed then v.format else s.format end,
+          rating            = case when v.changed then v.rating else s.rating end,
+          status            = case when v.reactivate then 'active'::showtime_status else s.status end,
+          archived_at       = case when v.reactivate then null else s.archived_at end,
           source_updated_at = coalesce(v."lastUpdated", s.source_updated_at),
-          last_import_id   = ${id},
-          version          = case when v.changed then s.version + 1 else s.version end,
-          updated_at       = case when v.changed then now() else s.updated_at end
+          last_import_id    = ${id},
+          version           = case when v.changed then s.version + 1 else s.version end,
+          updated_at        = case when v.changed then now() else s.updated_at end
         from jsonb_to_recordset(${JSON.stringify(payload)}::jsonb) as v(
           id text, changed boolean, reactivate boolean,
           "movieTitle" text, "movieTitleKey" text, auditorium text, "auditoriumKey" text,
-          "endTime" timestamptz, language text, format text, rating text, "lastUpdated" timestamptz
+          "startTime" timestamptz, "endTime" timestamptz, language text, format text, rating text,
+          "lastUpdated" timestamptz
         )
         where s.id = v.id and s.theater_id = ${theaterId}`);
     }
 
-    // 3. Adds. New movies start as needs-review; admins approve them.
-    const adds = rows.filter((r) => r.outcome === "add" && r.normalized);
+    // 4. Approved adds. New films start as needs-review; admins approve them.
+    const adds = allRows.filter(
+      (r) => r.outcome === "add" && r.normalized && !rejectedLineSet.has(r.lineNumber) && (rowChoice.get(r.lineNumber) ?? r.accepted),
+    );
     for (const part of chunks(adds)) {
       await tx.insert(showtimes).values(
         part.map((r) => {
@@ -379,14 +512,9 @@ export async function applyImport(ctx: AuthedContext, id: string, confirmLargeAr
       );
     }
   } catch (e) {
-    const err = e as { code?: string; cause?: { code?: string } };
-    if (err.code === "23505" || err.cause?.code === "23505") {
-      // The partial unique index is the final backstop for "one active showtime per movie + start".
-      throw new TRPCError({
-        code: "CONFLICT",
-        message: "Applying would create two active showtimes for the same movie and start time. Nothing was changed.",
-      });
-    }
+    // The partial unique index is the final backstop for "one active showtime per movie + start".
+    const message = conflictMessage(e, timezone);
+    if (message) throw new TRPCError({ code: "CONFLICT", message });
     throw e;
   }
 
@@ -394,7 +522,12 @@ export async function applyImport(ctx: AuthedContext, id: string, confirmLargeAr
     .update(theaters)
     .set({ scheduleVersion: sql`${theaters.scheduleVersion} + 1` })
     .where(eq(theaters.id, theaterId));
-  await tx.update(imports).set({ status: "applied", appliedAt: now, appliedBy: ctx.user.id }).where(eq(imports.id, id));
+  await tx
+    .update(imports)
+    .set({ status: "applied", appliedAt: now, appliedBy: ctx.user.id, archiveProposals: proposals })
+    .where(eq(imports.id, id));
+
+  const approved = toggleable.length - rejectLines.length;
   await audit(ctx, {
     action: "import.apply",
     entityType: "import",
@@ -402,12 +535,15 @@ export async function applyImport(ctx: AuthedContext, id: string, confirmLargeAr
     theaterId,
     after: {
       filename: imp.filename,
-      add: imp.addCount,
-      update: imp.updateCount,
+      approvedChanges: approved,
+      rejectedChanges: rejectLines.length,
+      archived: acceptedArchives.length,
+      keptMissing: proposals.length - acceptedArchives.length,
       unchanged: imp.unchangedCount,
-      archive: imp.archiveCount,
       duplicate: imp.duplicateCount,
-      rejected: imp.rejectedCount,
+      rejectedRows: imp.rejectedCount,
+      agent: imp.agent?.status ?? "off",
+      model: imp.agent?.model ?? null,
     },
   });
   return getImportDetail(ctx, id);

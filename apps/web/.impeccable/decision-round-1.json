@@ -1,0 +1,132 @@
+{
+  "title": "Choose the visual world for the showtimes console",
+  "question": "The roll assigned the Lobby Letterboard. Keep it, take an alternate, or re-roll. Each comp shows the AI import review open over the schedule.",
+  "options": [
+    {
+      "id": "assigned",
+      "label": "Lobby Letterboard",
+      "kicker": "THE ROLL",
+      "lineage": "cinema lobby changeable-letter boards",
+      "thesis": "The schedule is set like the lobby board: every approved change is a letter you slot in by hand.",
+      "palette": ["#141414", "#F2EFE8", "#D8392B", "#E9B949"],
+      "materials": ["grooved black felt", "white changeable letters"],
+      "viewport": "A felt-black band holds the theater's lineup in white board letters; below, the review lists each proposed change as a board line, approvals slot letters in.",
+      "risk": "Board caps are slow to read; the felt must stay a band and a signature, never the whole working surface.",
+      "raised": [
+        { "from": "challenger-ikeda", "raise": "Two inks only on the board, felt and letter; state is carried by letter color sets, never by greys." },
+        { "from": "challenger-crouwel", "raise": "The felt groove pitch is the layout grid; table rows and review lines snap to it." },
+        { "from": "challenger-saville", "raise": "One thing owns each screen: the board on the console, the change list in review." }
+      ],
+      "comp": ".impeccable/mocks/decision/assigned.png"
+    },
+    {
+      "id": "model-pick",
+      "label": "Galley Proof",
+      "kicker": "IMPECCABLE’S PICK",
+      "lineage": "newspaper showtime listings proofed before press",
+      "thesis": "The partner's drop arrives as a proof of the listings; the agent marks it in blue, you initial each mark in red, only red prints.",
+      "palette": ["#F3F0E8", "#1B1B1B", "#2F5DA8", "#C7362B"],
+      "materials": ["newsprint", "non-repro blue pencil", "red proof marks"],
+      "viewport": "A dense listings column with blue agent marks and margin notes; each mark carries a red initial box the operator ticks before applying.",
+      "risk": "Proof-room editorial is a familiar look; it fails the moment it slides into hairline-serif magazine styling.",
+      "comp": ".impeccable/mocks/decision/model-pick.png"
+    },
+    {
+      "id": "challenger-wayfinding",
+      "label": "Terminal Wayfinding",
+      "verdict": "competitive",
+      "lineage": "airport yellow sign systems",
+      "thesis": "One yellow band always says where you are and the single next decision: upload, review, apply.",
+      "palette": ["#FFD100", "#111111", "#FFFFFF"],
+      "materials": ["enamel sign panels", "pictogram insets"],
+      "viewport": "A sticky yellow band names the theater and the next step; the review below reads like a departures list of decisions.",
+      "case": "Fuses cleanly and wins on clarity of state; loses on audience identification.",
+      "risk": "Yellow fatigue if it leaks beyond the one band.",
+      "comp": ".impeccable/mocks/decision/challenger-wayfinding.png",
+      "hero": "https://impeccable.style/worlds/cards/wayfinding-cartography-signage-terminal-yellow-wayfinding-hero.webp"
+    },
+    {
+      "id": "challenger-score",
+      "label": "Day Score",
+      "verdict": "competitive",
+      "lineage": "labanotation dance scores",
+      "thesis": "The day as a score: auditoriums are staves, each showtime a block as long as its runtime, changes notated beside it.",
+      "palette": ["#FBFBF8", "#121212", "#9A9A94", "#3D6BE0"],
+      "materials": ["score paper", "solid, hatched and dotted blocks"],
+      "viewport": "Auditorium columns with runtime-length blocks; the review overlays proposed moves and archives as notation on the score.",
+      "case": "Shows overlaps and moved showtimes better than any table; loses on familiarity for daily list work.",
+      "risk": "The table view still has to exist beside it; two views to maintain.",
+      "comp": ".impeccable/mocks/decision/challenger-score.png",
+      "hero": "https://impeccable.style/worlds/cards/notation-diagram-systems-labanotation-hero.webp"
+    },
+    {
+      "id": "challenger-ikeda",
+      "label": "Datamatics",
+      "verdict": "declined",
+      "lineage": "Ryoji Ikeda data fields",
+      "palette": ["#000000", "#FFFFFF"],
+      "materials": ["barcode fields", "sine lattice"],
+      "thesis": "The schedule as a strobing data field.",
+      "viewport": "Barcode columns of showtimes.",
+      "risk": "Operators would not recognize their work in it.",
+      "case": "Fuses poorly: neither the audience nor the task reads through it.",
+      "kept": "Two-ink discipline: state by color set, no greys.",
+      "hero": "https://impeccable.style/worlds/cards/ikeda-datamatics-hero.webp"
+    },
+    {
+      "id": "challenger-crouwel",
+      "label": "Grid Specimen",
+      "verdict": "declined",
+      "lineage": "Wim Crouwel constructed type",
+      "palette": ["#FFFFFF", "#1A1A1A", "#2C5BEA"],
+      "materials": ["construction grid", "cell-built letters"],
+      "thesis": "Letterforms built on a visible grid.",
+      "viewport": "Grid-built theater names.",
+      "risk": "A type exercise, not a working tool.",
+      "case": "Fuses poorly on both axes.",
+      "kept": "A visible grid that everything snaps to.",
+      "hero": "https://impeccable.style/worlds/cards/crouwel-grid-specimen-hero.webp"
+    },
+    {
+      "id": "challenger-saville",
+      "label": "Factory Catalog",
+      "verdict": "declined",
+      "lineage": "Peter Saville catalog sleeves",
+      "palette": ["#0E0E0E", "#FFFFFF", "#E2463A"],
+      "materials": ["matte black", "coded color strips"],
+      "thesis": "Everything a numbered catalog entry.",
+      "viewport": "A black field with one plot.",
+      "risk": "Coded labels hide information operators need.",
+      "case": "Fuses poorly: coding names fights clarity.",
+      "kept": "One thing owns each screen.",
+      "hero": "https://impeccable.style/worlds/cards/brand-identity-canon-saville-catalog-sleeve-hero.webp"
+    },
+    {
+      "id": "challenger-goods",
+      "label": "Character Catalog",
+      "verdict": "declined",
+      "lineage": "character goods catalogs",
+      "palette": ["#F7E6EE", "#FFFFFF", "#F06B8A"],
+      "materials": ["pastel grounds", "mascot cells"],
+      "thesis": "A ranked roster of mascots.",
+      "viewport": "Theaters as mascot cells.",
+      "risk": "Wrong register for schedule operations.",
+      "case": "Fuses poorly on both axes.",
+      "kept": "Each theater keeps fixed personal furniture.",
+      "hero": "https://impeccable.style/worlds/cards/pop-culture-shelf-character-goods-catalog-hero.webp"
+    }
+  ],
+  "reroll": { "registers": ["safer", "bolder"] },
+  "buildPath": { "value": "comp", "toggle": true },
+  "canon": true,
+  "canonCard": {
+    "label": "The category standard",
+    "thesis": "A clean modern ops console, executed impeccably.",
+    "palette": ["#FFFFFF", "#18181B", "#4F46E5"],
+    "materials": ["neutral panels", "crisp table"],
+    "viewport": "Top bar, filters over a sortable table, the review as a side sheet of proposed changes.",
+    "risk": "Indistinguishable from every admin tool by design.",
+    "comp": ".impeccable/mocks/decision/canon.png"
+  },
+  "steer": true
+}

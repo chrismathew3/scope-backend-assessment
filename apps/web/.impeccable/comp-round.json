@@ -1,0 +1,13 @@
+{
+  "title": "Pick the composition",
+  "question": "Three hyper-minimal takes on the AI review. Pick one to build; the schedule and other pages follow the same system.",
+  "options": [
+    { "id": "comp-focus", "label": "Focus", "lineage": "Superhuman", "thesis": "No chrome. One centered column, big quiet title, one line per change plus its reason, keyboard first.",
+      "palette": ["#FFFFFF", "#111111", "#8A8A8A"], "materials": ["whitespace", "type hierarchy"], "viewport": "Centered review column, black Apply button, keyboard hints.", "risk": "Hides the schedule while reviewing.", "comp": ".impeccable/mocks/comp-focus.png" },
+    { "id": "comp-linear", "label": "Side panel", "lineage": "Linear", "thesis": "Quiet sidebar and schedule; the review opens as a calm right panel so you see context while approving.",
+      "palette": ["#FBFBFA", "#1A1A1A", "#8A8F98", "#5E6AD2"], "materials": ["hairlines", "one muted accent"], "viewport": "Sidebar, table, 400px review panel.", "risk": "Narrow panel gets tight on long reasons.", "comp": ".impeccable/mocks/comp-linear.png" },
+    { "id": "comp-vercel", "label": "Diff review", "lineage": "Vercel", "thesis": "A code-review style page: bordered rows, red and green inline diffs, missing showtimes in their own section.",
+      "palette": ["#FFFFFF", "#000000", "#EAEAEA", "#16A34A", "#DC2626"], "materials": ["bordered rows", "inline diff"], "viewport": "Breadcrumb top bar, summary box, diff rows, sticky footer.", "risk": "Red/green carries meaning, needs a text cue too.", "comp": ".impeccable/mocks/comp-vercel.png" }
+  ],
+  "steer": true
+}

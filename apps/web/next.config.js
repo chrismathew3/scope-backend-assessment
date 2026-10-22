@@ -5,6 +5,7 @@ import { env } from "./src/env.js";
 
 /** @type {import("next").NextConfig} */
 const config = {
+  devIndicators: false,
   // The API and shared packages ship as TypeScript source.
   transpilePackages: ["@scope/api", "@scope/shared"],
   // Loaded from node_modules (not bundled) so trpc-to-openapi and our schemas share one Zod instance.

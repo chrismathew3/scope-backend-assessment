@@ -4,12 +4,14 @@
  * lives in the hand-written migrations under ../../drizzle.
  */
 import { sql } from "drizzle-orm";
+import type { AgentRun } from "@scope/shared";
 import {
   boolean,
   check,
   index,
   integer,
   jsonb,
+  real,
   pgEnum,
   pgTable,
   primaryKey,
@@ -25,6 +27,18 @@ import {
   THEATER_ROLES,
   USER_STATUSES,
 } from "@scope/shared";
+
+/** Agent record for imports where no model ran. */
+export const AGENT_OFF: AgentRun = {
+  status: "off",
+  model: null,
+  summary: null,
+  error: null,
+  durationMs: null,
+  overrides: 0,
+  corrections: 0,
+  trace: [],
+};
 
 const id = () =>
   text("id")
@@ -195,6 +209,10 @@ export const imports = pgTable(
     activeBefore: integer("active_before").notNull().default(0),
     notices: jsonb("notices").$type<string[]>().notNull().default([]),
     archiveShowtimeIds: jsonb("archive_showtime_ids").$type<string[]>().notNull().default([]),
+    /** Showtimes missing from the drop, with the reason and the reviewer's choice. */
+    archiveProposals: jsonb("archive_proposals").$type<ArchiveProposal[]>().notNull().default([]),
+    /** What the reconciliation agent did: status, model, summary, trace. */
+    agent: jsonb("agent").$type<AgentRun>().notNull().default(AGENT_OFF),
     appliedBy: text("applied_by").references(() => users.id),
     appliedAt: tz("applied_at"),
     expiresAt: tz("expires_at").notNull(),
@@ -205,6 +223,13 @@ export const imports = pgTable(
     index("import_hash_idx").on(t.theaterId, t.fileSha256),
   ],
 );
+
+export type ArchiveProposal = {
+  showtimeId: string;
+  explanation: string;
+  decisionSource: "ai" | "rules";
+  accepted: boolean;
+};
 
 export type NormalizedRow = {
   movieTitle: string;
@@ -239,6 +264,14 @@ export const importRows = pgTable(
       .default([]),
     errors: jsonb("errors").$type<Issue[]>().notNull().default([]),
     warnings: jsonb("warnings").$type<Issue[]>().notNull().default([]),
+    /** Plain-language reason for the proposed action. */
+    explanation: text("explanation"),
+    confidence: real("confidence"),
+    decisionSource: text("decision_source").$type<"ai" | "rules">().notNull().default("rules"),
+    aiOverrodeRules: boolean("ai_overrode_rules").notNull().default(false),
+    duplicateOf: integer("duplicate_of"),
+    /** Reviewer's choice; only accepted add/update rows are applied. */
+    accepted: boolean("accepted").notNull().default(true),
   },
   (t) => [primaryKey({ columns: [t.importId, t.lineNumber] })],
 );
