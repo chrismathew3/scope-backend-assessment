@@ -80,7 +80,7 @@ export default function LoginPage() {
                       type="button"
                       disabled={login.isPending}
                       onClick={() => submit({ email: a.email, password: DEMO_PASSWORD })}
-                    aria-label={`Sign in as ${a.name}: ${describe(a.summary)}`}
+                      aria-label={`Sign in as ${a.name}: ${describe(a.summary)}`}
                       className="group flex w-full items-center gap-4 py-3.5 text-left transition-colors disabled:cursor-wait"
                     >
                       <span className="min-w-0 flex-1">

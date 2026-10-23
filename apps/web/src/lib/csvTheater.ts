@@ -25,7 +25,11 @@ function splitLine(line: string, delimiter: string) {
   return cells.map((c) => c.trim());
 }
 
-const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+const normalize = (s: string) =>
+  s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 
 /** The theater name in the first data row, or null if the file has no theater column. */
 export function theaterNameFromCsv(buffer: ArrayBuffer): string | null {
@@ -34,7 +38,9 @@ export function theaterNameFromCsv(buffer: ArrayBuffer): string | null {
   const lines = text.split(/\r?\n/).filter((l) => l.trim() !== "");
   if (lines.length < 2) return null;
   const header = lines[0]!;
-  const delimiter = [",", ";", "\t"].reduce((best, d) => (header.split(d).length > header.split(best).length ? d : best));
+  const delimiter = [",", ";", "\t"].reduce((best, d) =>
+    header.split(d).length > header.split(best).length ? d : best,
+  );
   const columns = splitLine(header, delimiter).map(normalize);
   const index = columns.findIndex((c) => /\b(theater|theatre|cinema|venue|location)\b/.test(c) && !/\bid\b/.test(c));
   if (index === -1) return null;

@@ -16,6 +16,7 @@ import {
   clearedSessionCookie,
   createSession,
   deleteSession,
+  purgeExpiredSessions,
   revokeUserSessions,
   sessionCookie,
 } from "../../auth/session";
@@ -36,7 +37,7 @@ export const authRouter = router({
     .output(OkOutput)
     .mutation(async ({ ctx, input }) => {
       const email = input.email.toLowerCase();
-      const wait = loginBlocked(ctx.ip, email);
+      const wait = await loginBlocked(ctx.ip, email);
       if (wait) {
         throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: `Too many attempts. Try again in ${wait}s.` });
       }
@@ -48,11 +49,12 @@ export const authRouter = router({
       // Always run the hash so response time doesn't reveal whether the email exists.
       const ok = await verifyPassword(input.password, user?.passwordHash ?? DUMMY_HASH);
       if (!user || !ok || user.status !== "active") {
-        recordLoginFailure(ctx.ip, email);
+        await recordLoginFailure(ctx.ip, email);
         throw new TRPCError({ code: "UNAUTHORIZED", message: "Email or password is incorrect" });
       }
-      clearLoginFailures(ctx.ip, email);
+      await clearLoginFailures(ctx.ip, email);
       const token = await createSession(user.id, { ip: ctx.ip, userAgent: ctx.userAgent });
+      await purgeExpiredSessions();
       ctx.resHeaders.append("Set-Cookie", sessionCookie(token));
       return { ok: true as const };
     }),
@@ -87,9 +89,11 @@ export const authRouter = router({
         .update(users)
         .set({ passwordHash: await hashPassword(input.newPassword), mustChangePassword: false })
         .where(eq(users.id, ctx.user.id));
-      // Other devices are signed out; this one stays.
-      await revokeUserSessions(ctx.user.id, ctx.sessionId ?? undefined);
+      // Every session ends, including this one, which gets a fresh token instead.
+      await revokeUserSessions(ctx.tx, ctx.user.id);
+      const token = await createSession(ctx.user.id, { ip: ctx.ip, userAgent: ctx.userAgent }, ctx.tx);
       await audit(ctx, { action: "user.password_change", entityType: "user", entityId: ctx.user.id });
+      ctx.resHeaders.append("Set-Cookie", sessionCookie(token));
       return { ok: true as const };
     }),
 

@@ -31,13 +31,12 @@ export function useShell(): ShellContext {
   return v;
 }
 
-export const useMe = () => useShell().me;
-
 export function principalOf(me: Me) {
   return { userId: me.id, isSuperAdmin: me.isSuperAdmin, theaterRoles: me.theaterRoles };
 }
 
-const STORAGE_KEY = "showtimes.theater";
+/** Per user, so switching demo roles in one browser doesn't carry a theater across accounts. */
+const storageKey = (userId: string) => `showtimes.theater.${userId}`;
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const trpc = useTRPC();
@@ -53,27 +52,34 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [unauthorized, router]);
 
   // Restore the last theater once we know which ones this user can see.
+  // "All theaters" only exists as an option with two or more.
+  const userId = me.data?.id;
   useEffect(() => {
-    if (!theaters.data) return;
+    if (!theaters.data || !userId) return;
     let stored: string | null = null;
     try {
-      stored = window.localStorage.getItem(STORAGE_KEY);
+      stored = window.localStorage.getItem(storageKey(userId));
     } catch {
       stored = null;
     }
     const ids = theaters.data.map((t) => t.id);
-    if (stored && (stored === "all" || ids.includes(stored))) setTheaterIdState(stored);
+    if (stored && ids.includes(stored)) setTheaterIdState(stored);
     else if (ids.length === 1) setTheaterIdState(ids[0]!);
-  }, [theaters.data]);
+    else setTheaterIdState("all");
+  }, [theaters.data, userId]);
 
-  const setTheaterId = useCallback((id: string) => {
-    setTheaterIdState(id);
-    try {
-      window.localStorage.setItem(STORAGE_KEY, id);
-    } catch {
-      // private mode: the choice just won't persist
-    }
-  }, []);
+  const setTheaterId = useCallback(
+    (id: string) => {
+      setTheaterIdState(id);
+      if (!userId) return;
+      try {
+        window.localStorage.setItem(storageKey(userId), id);
+      } catch {
+        // private mode: the choice just won't persist
+      }
+    },
+    [userId],
+  );
 
   const notify = useCallback((text: string, tone: "ok" | "error" = "ok") => {
     setToast({ text, tone, key: Date.now() });
@@ -118,7 +124,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div
             key={toast.key}
             role="status"
-            className={`pointer-events-auto max-w-lg animate-[toast-in_220ms_var(--ease-out-expo)] rounded-lg px-4 py-2.5 text-[13px] shadow-[0_8px_24px_rgba(0,0,0,0.12)] ${
+            className={`toast-in pointer-events-auto max-w-lg rounded-lg px-4 py-2.5 text-[13px] shadow-[0_8px_24px_rgba(0,0,0,0.12)] ${
               toast.tone === "error" ? "bg-remove text-white" : "bg-ink text-white"
             }`}
           >
@@ -126,7 +132,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         )}
       </div>
-      <style>{`@keyframes toast-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}`}</style>
     </Ctx.Provider>
   );
 }
@@ -179,7 +184,7 @@ function TopBar() {
             value={theaterId}
             onChange={(e) => setTheaterId(e.target.value)}
             disabled={theaters.length === 0}
-            className="[field-sizing:content] max-w-[46vw] cursor-pointer appearance-none truncate rounded-md py-1.5 pr-6 pl-1.5 text-[14px] font-semibold tracking-[-0.01em] hover:bg-wash focus:outline-none sm:max-w-none"
+            className="[field-sizing:content] max-w-[46vw] cursor-pointer appearance-none truncate rounded-md py-1.5 pr-6 pl-1.5 text-[14px] font-semibold tracking-[-0.01em] hover:bg-wash focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-focus sm:max-w-none"
           >
             {theaters.length === 0 && <option value="all">No theaters</option>}
             {theaters.length > 1 && <option value="all">All theaters</option>}
@@ -298,7 +303,7 @@ function UserMenu({ nav, focus }: { nav: { href: string; label: string }[]; focu
       {open && (
         <div
           role="menu"
-          className="absolute right-0 mt-1.5 w-60 origin-top-right animate-[menu-in_160ms_var(--ease-out-expo)] rounded-lg border border-line bg-white p-1 shadow-[0_12px_32px_rgba(0,0,0,0.10)]"
+          className="menu-in absolute right-0 mt-1.5 w-60 origin-top-right rounded-lg border border-line bg-white p-1 shadow-[0_12px_32px_rgba(0,0,0,0.10)]"
         >
           <div className="px-2.5 pt-2 pb-2.5 text-[12px] text-ink-2">{me.email}</div>
           <div className={focus ? "" : "sm:hidden"}>
@@ -337,7 +342,6 @@ function UserMenu({ nav, focus }: { nav: { href: string; label: string }[]; focu
           </button>
         </div>
       )}
-      <style>{`@keyframes menu-in{from{opacity:0;transform:translateY(-4px) scale(.98)}to{opacity:1;transform:none}}`}</style>
     </div>
   );
 }

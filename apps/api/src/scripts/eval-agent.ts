@@ -1,6 +1,7 @@
 /**
  * Compares models on the sample drops: parse -> rules -> agent -> verify,
  * against the seeded Downtown schedule, scored on test/fixtures/csv/agent-expected.json.
+ * The first line is the rules alone (no model), so each model's contribution is the difference.
  *
  *   bun src/scripts/eval-agent.ts [runs] [model ...]
  */
@@ -28,6 +29,33 @@ const samples = ["new-drop", "tricky-drop"].map((name) => {
   return { name, rules: reconcile(parsed.rows, existing), existing };
 });
 
+/** Rows + archive lists that match the expected result. */
+function grade(name: string, m: ReturnType<typeof mergeAgentReview>, misses: string[]) {
+  const exp = expected[name]!;
+  let correct = 0;
+  for (const r of m.rows) {
+    const e = exp.rows[String(r.lineNumber)];
+    if (e && e.outcome === r.outcome && e.showtimeId === r.showtimeId) correct++;
+    else misses.push(`${name} line ${r.lineNumber}: got ${r.outcome}/${r.showtimeId} (${r.decisionSource})`);
+  }
+  if (JSON.stringify(m.archives.map((a) => a.showtime.id).sort()) === JSON.stringify([...exp.archives].sort())) correct++;
+  else misses.push(`${name}: archives ${m.archives.map((a) => a.showtime.id).join(",")}`);
+  return { correct, total: m.rows.length + 1 };
+}
+
+{
+  const misses: string[] = [];
+  let correct = 0;
+  let total = 0;
+  for (const s of samples) {
+    const g = grade(s.name, mergeAgentReview(s.rules, null, s.existing, { timezone: TZ }), misses);
+    correct += g.correct;
+    total += g.total;
+  }
+  console.log(`${"rules only (no model)".padEnd(32)} accuracy ${correct}/${total}`);
+  for (const miss of misses) console.log(`    ${miss}`);
+}
+
 type Score = { correct: number; total: number; corrections: number; ms: number[]; inTok: number; outTok: number; fails: number; misses: string[] };
 
 for (const id of models) {
@@ -46,16 +74,9 @@ for (const id of models) {
       }
       const m = mergeAgentReview(s.rules, out.review, s.existing, { timezone: TZ });
       score.corrections += m.corrections;
-      const exp = expected[s.name]!;
-      for (const r of m.rows) {
-        const e = exp.rows[String(r.lineNumber)];
-        score.total++;
-        if (e && e.outcome === r.outcome && e.showtimeId === r.showtimeId) score.correct++;
-        else score.misses.push(`${s.name} line ${r.lineNumber}: got ${r.outcome}/${r.showtimeId} (${r.decisionSource})`);
-      }
-      score.total++;
-      if (JSON.stringify(m.archives.map((a) => a.showtime.id).sort()) === JSON.stringify([...exp.archives].sort())) score.correct++;
-      else score.misses.push(`${s.name}: archives ${m.archives.map((a) => a.showtime.id).join(",")}`);
+      const g = grade(s.name, m, score.misses);
+      score.correct += g.correct;
+      score.total += g.total;
     }
   }
   const avg = Math.round(score.ms.reduce((a, b) => a + b, 0) / score.ms.length);

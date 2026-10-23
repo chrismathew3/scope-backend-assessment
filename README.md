@@ -1,40 +1,47 @@
 # Theater Showtimes
 
-A theater schedule console with an AI-reviewed CSV import. An LLM agent compares a partner's showtime file with the stored schedule, matches title and auditorium variants, finds new, changed, missing and duplicate rows, and proposes an action for each with a reason. You untick what you disagree with and apply; the result is saved with an audit trail.
+A schedule console for movie theaters. Partners send showtime CSVs; an LLM agent compares each file with the stored schedule and proposes what to add, update, archive or ignore, with a reason for each. You review, untick anything you disagree with, and apply.
 
-Live: https://scope-showtimes.vercel.app · API docs: https://scope-showtimes.vercel.app/api/docs
+- Live: https://scope-showtimes.vercel.app
+- API docs: https://scope-showtimes.vercel.app/api/docs
 
-To try it, pick Avery Admin on the sign-in screen, then Import CSV, choose `tricky-drop.csv`, review and Apply. No sign-up. The demo database is shared; signed in as Sam Super, *Reset demo data* in the user menu restores it.
+**Try it:** sign in as Avery Admin, click Import CSV, pick `tricky-drop.csv`, review, apply. The demo database is shared. Sam Super can restore it from the user menu (Reset demo data).
 
 ## Run it locally
 
-Needs Bun ≥ 1.2 and Postgres ≥ 15.
+You need Bun 1.3+ and Postgres 15+.
 
 ```bash
 bun install
 createdb scope_showtimes
-cp apps/api/.env.example apps/api/.env      # add GEMINI_API_KEY for the agent
+cp apps/api/.env.example apps/api/.env   # set GEMINI_API_KEY here
 cp apps/web/.env.example apps/web/.env
 bun run db:migrate && bun run db:seed
-bun run dev                                 # web :3000, API :8787
+bun run dev                              # web on :3000, API on :8787
 ```
 
-For the agent, the easiest option is a free Gemini API key in `GEMINI_API_KEY` (uses `gemini-3-flash-preview`); an AI Gateway key in `AI_GATEWAY_API_KEY` also works. With neither, imports still work: the rules decide every row and the review page says so.
+A free Gemini key is enough for the agent. Without one, imports still work and plain rules decide every row.
 
-`bun run test` runs 143 unit tests. `bun run --filter @scope/api test:e2e` runs 18 end-to-end scenarios against the running stack with the real agent.
+Tests: `bun run test` (unit) and `bun run --filter @scope/api test:e2e` (end to end, against the running stack and the real model).
 
-## Key decisions
+## Decisions
 
-- **AI review.** Gemini 3 Flash runs as a tool-using agent (Vercel AI SDK) and decides each row. Code then checks every decision against the schedule: matches must be real and unclaimed, diffs and archives are computed by code, and an invalid decision falls back to the rule-based answer. The model never writes to the database, which also makes prompt injection in CSV cells harmless.
-- **Review before apply.** Every proposed change, including each archive, shows its reason and confidence and can be unticked. Apply runs in one transaction, is idempotent, and refuses a stale preview if the schedule changed after upload.
-- **Titles.** A partner's typo matches the right showtime but doesn't overwrite your title; their spelling shows as a note. Auditorium renames are applied, as the brief describes.
-- **Access.** Each user is admin or viewer in any number of theaters; a super admin manages theaters and people. Admins can edit any field (movie status included), add, archive (archive is the delete, so history survives), import and clear. Viewers get public fields of active showtimes only. Postgres row-level security enforces the same rules again.
-- **Search.** Title search goes through a trigram-indexed catalog of distinct titles, then an indexed lookup; sorts and keyset paging are index walks. On 500,000 showtimes, search, filters, sorts and paging take 2–22 ms. Sorting by theater name is the slow case, at up to 230 ms. See [docs/search-at-scale.md](docs/search-at-scale.md).
-- **Stack.** The brief shipped a FastAPI stub. I used TypeScript end to end so one set of Zod schemas validates the API, the forms and the generated OpenAPI spec. Bun workspace: Next.js 15 + Tailwind v4 (`apps/web`), Hono + tRPC + Drizzle + Postgres (`apps/api`), shared schemas and permissions (`packages/shared`).
-- **Login.** The brief says auth isn't required, so login is a one-click role picker for the admin, viewer, mixed and super-admin views. Sessions underneath are real (hashed tokens, rate-limited login) because the app is public.
+**The model proposes, code checks.** The agent reads each row with its likely matches and can search the schedule itself. Before anything reaches you, code verifies every decision: the matched showtime must exist and not be claimed twice, a sequel can't match its predecessor, and anything invalid falls back to the rule-based answer. Diffs and archive lists are computed by code, never by the model, so a CSV cell that says "ignore your instructions" can't do damage.
 
-The full AI pipeline and every environment variable are in [docs/how-it-works.md](docs/how-it-works.md).
+**Nothing changes until you apply.** Every proposed change, archives included, can be unticked. Apply is one transaction. It's safe to retry, and it refuses if the schedule changed after you uploaded.
 
-## Samples
+**Your spelling wins.** A partner's typo still matches the right showtime, but your title stays; theirs is shown as a note. Auditorium renames are applied, since the brief treats them as updates.
 
-`sample-data/` holds the brief's `new-drop.csv`, a harder `tricky-drop.csv` (Downtown), and `riverside-drop.csv` / `uptown-drop.csv` for the other theaters. The import page offers each theater's samples directly and picks the theater from the file if none is selected.
+**Access is per theater.** Each user is an admin or a viewer in any number of theaters. Admins can edit, add and archive showtimes (archiving is the delete, so nothing is lost). Viewers see active showtimes without internal fields. A super admin manages theaters and people. For showtimes and imports, Postgres row-level security enforces the same rules a second time.
+
+**Search holds up at 500,000 rows.** Title search matches against a small catalog of distinct titles first, then looks up showtimes by index. On 500k rows, paging, sorts and filters take 2–13 ms and title search 30–50 ms; sorting by theater name is the slow one at up to 240 ms. Numbers and method: [docs/search-at-scale.md](docs/search-at-scale.md).
+
+**TypeScript instead of the FastAPI stub.** One set of Zod schemas validates the API, the forms and the OpenAPI spec. Next.js 15 (`apps/web`), Hono + tRPC + Drizzle on Postgres (`apps/api`), shared schemas and permissions (`packages/shared`).
+
+**A role picker instead of a login form.** The brief doesn't need auth, so you pick a role in one click. The sessions behind it are real because the site is public.
+
+More on the pipeline, access rules and environment variables: [docs/how-it-works.md](docs/how-it-works.md).
+
+## Sample files
+
+`sample-data/` has the brief's `new-drop.csv`, a harder `tricky-drop.csv`, and one file each for Riverside and Uptown. The import page offers them directly.

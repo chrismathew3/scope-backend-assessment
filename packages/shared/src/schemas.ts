@@ -72,7 +72,9 @@ export const TheaterCreateInput = z.object({
   location: z.string().trim().min(2).max(120),
   timezone: ianaTimezone,
 });
-export const TheaterUpdateInput = TheaterCreateInput.partial().extend({ id });
+export const TheaterUpdateInput = TheaterCreateInput.partial()
+  .extend({ id })
+  .refine((v) => v.name !== undefined || v.location !== undefined || v.timezone !== undefined, "Nothing to update");
 export const IdInput = z.object({ id });
 
 /* ───────── showtimes ───────── */
@@ -259,7 +261,10 @@ export const ImportRowView = z.object({
   duplicateOf: z.number().int().nullable(),
   /** The reviewer's choice. Only accepted add/update rows are applied. */
   accepted: z.boolean(),
+  /** The stored title, which a match keeps (for adds of a known film, its stored spelling). */
   movieTitle: z.string().nullable(),
+  /** The drop's own spelling when it differs from movieTitle; null when they're the same. */
+  partnerTitle: z.string().nullable(),
   auditorium: z.string().nullable(),
   startTime: z.string().nullable(),
   endTime: z.string().nullable(),
@@ -295,7 +300,7 @@ export const AgentRun = z.object({
   /** ok: agent decided (verified). fallback: agent failed or was unavailable, rules decided. off: no model configured. */
   status: z.enum(["ok", "fallback", "off"]),
   model: z.string().nullable(),
-  /** The agent's own 1-3 sentence summary of the drop. */
+  /** One-line summary of the verified result, written by code (so it never contradicts the rows). */
   summary: z.string().nullable(),
   error: z.string().nullable(),
   durationMs: z.number().int().nullable(),
@@ -304,6 +309,8 @@ export const AgentRun = z.object({
   /** Agent decisions the verifier rejected and replaced with the rules' answer. */
   corrections: z.number().int(),
   trace: z.array(AgentTraceStep),
+  /** Model tokens used across all batches. Absent on imports made before this was recorded. */
+  usage: z.object({ inputTokens: z.number().int(), outputTokens: z.number().int() }).optional(),
 });
 export type AgentRun = z.infer<typeof AgentRun>;
 
@@ -395,11 +402,13 @@ export const UserCreateOutput = z.object({
   temporaryPassword: z.string(),
 });
 
-export const UserUpdateInput = z.object({
-  id,
-  name: z.string().trim().min(1).max(120).optional(),
-  isSuperAdmin: z.boolean().optional(),
-});
+export const UserUpdateInput = z
+  .object({
+    id,
+    name: z.string().trim().min(1).max(120).optional(),
+    isSuperAdmin: z.boolean().optional(),
+  })
+  .refine((v) => v.name !== undefined || v.isSuperAdmin !== undefined, "Nothing to update");
 
 export const MembershipSetInput = z.object({ userId: id, theaterId: id, role: TheaterRole });
 export const MembershipRemoveInput = z.object({ userId: id, theaterId: id });

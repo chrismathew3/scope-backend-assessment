@@ -1,13 +1,14 @@
 import { IdInput, ImportApplyInput, ImportCreateInput, ImportDetail, ImportListInput, ImportSummary } from "@scope/shared";
 import { z } from "zod";
 import { applyImport, createImport, discardImport, getImportDetail, listImports } from "../../services/imports";
-import { authedProcedure, requireTheater, router } from "../init";
+import { authedProcedure, authedProcedureWithoutTx, requireTheater, router } from "../init";
 
 const tags = ["imports"];
 
 /** Every import procedure is admin-only for the theater; RLS enforces the same. */
 export const importsRouter = router({
-  create: authedProcedure
+  // The agent's model call can take tens of seconds, so no transaction is held open across it.
+  create: authedProcedureWithoutTx
     .meta({
       openapi: {
         method: "POST",

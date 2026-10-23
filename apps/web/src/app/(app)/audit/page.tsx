@@ -80,7 +80,8 @@ function describe(action: string, before: unknown, after: unknown, timeZone?: st
   }
   if (action === "schedule.archive_all") return `${plural(num(a.archived), "showtime")} archived.`;
   if (action === "user.create") return `${str(a.email)}${a.isSuperAdmin ? ", as super admin" : ""}.`;
-  if (action === "demo.reset") return "Seeded schedule restored. Earlier imports and history were cleared for the next reviewer.";
+  if (action === "demo.reset")
+    return "Seeded schedule restored. Earlier imports and history were cleared for the next reviewer.";
   if (action === "showtime.create") {
     return `${str(a.movieTitle)}, ${str(a.auditorium)}, ${pretty(a.startTime, timeZone)}.`;
   }
@@ -99,12 +100,14 @@ function describe(action: string, before: unknown, after: unknown, timeZone?: st
   return parts.length ? `${parts.join(", ").replace(/^./, (c) => c.toUpperCase())}.` : "";
 }
 
+const AUDIT_LIMIT = 100;
+
 export default function AuditPage() {
   const trpc = useTRPC();
   const { me, theaters } = useShell();
   const [theaterId, setTheaterId] = useState("");
   const adminTheaters = theaters.filter((t) => me.theaterRoles[t.id] === "admin");
-  const log = useQuery(trpc.audit.list.queryOptions({ theaterId: theaterId || undefined, limit: 100 }));
+  const log = useQuery(trpc.audit.list.queryOptions({ theaterId: theaterId || undefined, limit: AUDIT_LIMIT }));
   const names = Object.fromEntries(theaters.map((t) => [t.id, t.name]));
   const timezones = Object.fromEntries(theaters.map((t) => [t.id, t.timezone]));
 
@@ -132,6 +135,7 @@ export default function AuditPage() {
         </select>
       </div>
       {log.error && <p className="mt-6 text-[13px] text-remove">{errorMessage(log.error)}</p>}
+      {log.isPending && <p className="mt-6 text-[13px] text-ink-3">Loading…</p>}
       <ul className="mt-8 border-t border-line">
         {(log.data ?? []).map((e) => {
           const detail = describe(e.action, e.before, e.after, e.theaterId ? timezones[e.theaterId] : undefined);
@@ -156,6 +160,9 @@ export default function AuditPage() {
         })}
       </ul>
       {log.data?.length === 0 && <p className="py-10 text-center text-[13px] text-ink-2">No changes yet.</p>}
+      {log.data?.length === AUDIT_LIMIT && (
+        <p className="mt-4 text-[13px] text-ink-3">Showing the latest {AUDIT_LIMIT} entries.</p>
+      )}
     </div>
   );
 }

@@ -2,6 +2,7 @@
 
 import {
   ADMIN_ONLY_SORTS,
+  fromZonedFields,
   MOVIE_STATUSES,
   type MovieStatus,
   SHOWTIME_STATUSES,
@@ -9,12 +10,13 @@ import {
   type ShowtimeSort,
   type ShowtimeStatus,
 } from "@scope/shared";
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, ChevronUp, Search, SlidersHorizontal, X } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useMemo, useState } from "react";
 import { useDebounce } from "~/lib/hooks/useDebounce";
 import { movieStatusLabel, statusLabel } from "~/lib/labels";
+import { patchShowtimeRows } from "~/lib/showtimeCache";
 import { errorMessage, type RouterInputs, useTRPC } from "~/lib/trpc";
 import { button, column, field, formatDay, formatTime, h1, inlineSelect, page, plural, selectField } from "~/lib/ui";
 import { useShell } from "../_components/AppShell";
@@ -55,8 +57,17 @@ const filterLabels: Record<keyof Filters, string> = {
   to: "To",
 };
 
-const dayBoundary = (date: string, end: boolean) =>
-  date ? new Date(`${date}T${end ? "23:59:59.999" : "00:00:00"}`).toISOString() : undefined;
+/** Midnight starting `date` (plus `addDays`) in `timeZone`, in epoch ms. */
+function midnight(date: string, timeZone: string, addDays = 0) {
+  const r = fromZonedFields(date, "00:00", timeZone, addDays);
+  return r.ok ? r.date.getTime() : undefined;
+}
+const dayStart = (date: string, tz: string) => (date ? midnight(date, tz) : undefined);
+const dayEnd = (date: string, tz: string) => {
+  const next = date ? midnight(date, tz, 1) : undefined;
+  return next === undefined ? undefined : next - 1;
+};
+const iso = (ms: number | undefined) => (ms === undefined ? undefined : new Date(ms).toISOString());
 
 const statusDot: Record<ShowtimeStatus, string> = { active: "bg-ink", inactive: "bg-risk", archived: "bg-line-strong" };
 
@@ -66,14 +77,20 @@ export default function ShowtimesPage() {
   const { me, theaters, theaterId, selected, notify } = useShell();
 
   const [filters, setFilters] = useState<Filters>(noFilters);
+  // Facet values belong to one theater, so a new scope starts with no filters.
+  const [filtersFor, setFiltersFor] = useState(theaterId);
+  if (filtersFor !== theaterId) {
+    setFiltersFor(theaterId);
+    setFilters(noFilters);
+  }
   const [showFilters, setShowFilters] = useState(false);
   const [search, setSearch] = useState("");
   const q = useDebounce(search.trim(), 250);
   const [sort, setSort] = useState<ShowtimeSort>("startTime");
   const [order, setOrder] = useState<"asc" | "desc">("asc");
-  const [pendingId, setPendingId] = useState<string | null>(null);
-  const [panel, setPanel] = useState<ShowtimePanelMode | null>(null);
+  const [panel, setPanel] = useState<{ mode: ShowtimePanelMode; opener: HTMLElement | null } | null>(null);
   const closePanel = useCallback(() => setPanel(null), []);
+  const openPanel = (mode: ShowtimePanelMode, opener: HTMLElement | null) => setPanel({ mode, opener });
 
   const scopeId = theaterId === "all" ? undefined : theaterId;
   const role = scopeId ? me.theaterRoles[scopeId] : undefined;
@@ -86,6 +103,11 @@ export default function ShowtimesPage() {
   );
   const canWriteHere = scopeId ? isAdminHere : adminTheaters.length > 0;
   const timezones = useMemo(() => Object.fromEntries(theaters.map((t) => [t.id, t.timezone])), [theaters]);
+  // Date filters are days in the theater's own timezone. Across theaters that only works if they share
+  // one (the seed data does); otherwise fall back to the browser's.
+  const zones = new Set(theaters.map((t) => t.timezone));
+  const filterTz =
+    selected?.timezone ?? (zones.size === 1 ? [...zones][0]! : Intl.DateTimeFormat().resolvedOptions().timeZone);
 
   const input: ListInput = {
     theaterId: scopeId,
@@ -96,8 +118,8 @@ export default function ShowtimesPage() {
     language: filters.language || undefined,
     rating: filters.rating || undefined,
     auditorium: filters.auditorium || undefined,
-    from: dayBoundary(filters.from, false),
-    to: dayBoundary(filters.to, true),
+    from: iso(dayStart(filters.from, filterTz)),
+    to: iso(dayEnd(filters.to, filterTz)),
     sort: !allowAdminSorts && ADMIN_ONLY_SORTS.includes(sort) ? "startTime" : sort,
     order,
     limit: 50,
@@ -123,18 +145,33 @@ export default function ShowtimesPage() {
       queryClient.invalidateQueries({ queryKey: trpc.showtimes.facets.pathKey() }),
     ]);
 
+  // Inline edits show at once and take the saved row (with its new version) from the response,
+  // so a second edit right after doesn't send a stale version. A row stays locked while it saves.
+  const listKey = trpc.showtimes.list.pathKey();
+  const updateKey = trpc.showtimes.update.mutationKey();
   const update = useMutation(
     trpc.showtimes.update.mutationOptions({
-      onMutate: (v) => setPendingId(v.id),
-      onSettled: () => setPendingId(null),
+      onMutate: async ({ id, movieStatus, status }) => {
+        await queryClient.cancelQueries({ queryKey: listKey });
+        patchShowtimeRows(queryClient, listKey, id, (r) =>
+          r.access === "admin" ? { ...r, ...(movieStatus && { movieStatus }), ...(status && { status }) } : r,
+        );
+      },
       onSuccess: (row) => {
+        patchShowtimeRows(queryClient, listKey, row.id, () => row);
         notify(`${row.movieTitle} updated.`);
-        void refresh();
       },
-      onError: (e) => {
-        notify(errorMessage(e), "error");
-        void refresh();
+      onError: (e) => notify(errorMessage(e), "error"),
+      onSettled: () => {
+        // Refetch once the last edit lands, so filters and sort catch up without undoing other pending edits.
+        if (queryClient.isMutating({ mutationKey: updateKey }) === 1) void refresh();
       },
+    }),
+  );
+  const savingIds = new Set(
+    useMutationState({
+      filters: { mutationKey: updateKey, status: "pending" },
+      select: (m) => (m.state.variables as { id: string } | undefined)?.id,
     }),
   );
   const onUpdate = (row: AdminRow, patch: { movieStatus?: MovieStatus; status?: ShowtimeStatus }) =>
@@ -174,7 +211,7 @@ export default function ShowtimesPage() {
   }
 
   const subline = [
-    selected ? selected.location : `${theaters.length} theaters`,
+    selected ? selected.location : plural(theaters.length, "theater"),
     scopeId ? (isAdminHere ? "You're an admin here" : "Read-only, active showtimes only") : null,
     first
       ? `${first.totalCapped ? "10,000+" : first.total.toLocaleString()} ${first.total === 1 ? "showtime" : "showtimes"}`
@@ -209,7 +246,7 @@ export default function ShowtimesPage() {
             )}
             <button
               className={`${button.secondary} sm:mr-1`}
-              onClick={() => setPanel({ kind: "new", theaterId: scopeId })}
+              onClick={(e) => openPanel({ kind: "new", theaterId: scopeId }, e.currentTarget)}
             >
               New showtime
             </button>
@@ -377,7 +414,7 @@ export default function ShowtimesPage() {
             {rows.map((row) => {
               const tz = timezones[row.theaterId];
               const admin = row.access === "admin" ? row : null;
-              const busy = pendingId === row.id;
+              const busy = savingIds.has(row.id);
               return (
                 <tr
                   key={row.id}
@@ -387,18 +424,18 @@ export default function ShowtimesPage() {
                     admin
                       ? (e) => {
                           if (!(e.target as HTMLElement).closest("select, button"))
-                            setPanel({ kind: "edit", row: admin });
+                            openPanel({ kind: "edit", row: admin }, e.currentTarget.querySelector("button"));
                         }
                       : undefined
                   }
-                  className={`border-b border-line transition-colors hover:bg-[#fafafa] ${admin ? "cursor-pointer" : ""} ${admin?.status === "archived" ? "text-ink-3" : ""}`}
+                  className={`border-b border-line transition-colors hover:bg-wash-soft ${admin ? "cursor-pointer" : ""} ${admin?.status === "archived" ? "text-ink-3" : ""}`}
                 >
                   {!scopeId && <td className="py-2.5 pr-4 text-ink-2">{row.theaterName}</td>}
                   <td className="py-2.5 pr-4 font-medium">
                     {admin ? (
                       <button
                         type="button"
-                        onClick={() => setPanel({ kind: "edit", row: admin })}
+                        onClick={(e) => openPanel({ kind: "edit", row: admin }, e.currentTarget)}
                         className="text-left font-medium underline-offset-4 hover:underline"
                         aria-label={`Edit ${row.movieTitle}`}
                       >
@@ -482,7 +519,7 @@ export default function ShowtimesPage() {
               {admin ? (
                 <button
                   type="button"
-                  onClick={() => setPanel({ kind: "edit", row: admin })}
+                  onClick={(e) => openPanel({ kind: "edit", row: admin }, e.currentTarget)}
                   className="flex w-full items-center gap-3 text-left"
                   aria-label={`Edit ${row.movieTitle}, ${formatDay(row.startTime, tz)} ${formatTime(row.startTime, tz)}`}
                 >
@@ -497,7 +534,7 @@ export default function ShowtimesPage() {
         })}
       </ul>
 
-      {!list.isPending && rows.length === 0 && (
+      {!list.isPending && !list.error && rows.length === 0 && (
         <div className="py-16 text-center">
           <p className="font-medium">{filtering ? "No showtimes match" : "No showtimes yet"}</p>
           <p className="mt-1 text-[13px] text-ink-2">
@@ -529,8 +566,9 @@ export default function ShowtimesPage() {
 
       {panel && (
         <ShowtimePanel
-          key={panel.kind === "edit" ? panel.row.id : "new"}
-          mode={panel}
+          key={panel.mode.kind === "edit" ? panel.mode.row.id : "new"}
+          mode={panel.mode}
+          returnFocusTo={panel.opener}
           adminTheaters={adminTheaters}
           suggestions={{
             auditoriums: facets.data?.auditoriums ?? [],
@@ -541,6 +579,7 @@ export default function ShowtimesPage() {
           onClose={closePanel}
           onSaved={(row, created) => {
             setPanel(null);
+            if (!created) patchShowtimeRows(queryClient, listKey, row.id, () => row);
             notify(created ? `${row.movieTitle} added.` : `${row.movieTitle} updated.`);
             void refresh();
           }}

@@ -188,7 +188,49 @@ describe("matching rules", () => {
       current,
     );
     expect(r.rows[1]!.matchMethod).toBe("exact_key");
+    // The typo row is the same showtime, so it's a duplicate, never a second active copy.
+    expect(r.rows[0]!.outcome).toBe("duplicate");
+    expect(r.rows[0]!.duplicateOf).toBe(3);
+  });
+
+  test("P0 a different subtitle is a different film, even with similar titles", () => {
+    const current = [existing("into", "Spider-Man: Into the Spider-Verse", "Auditorium 1", "2025-03-20T18:00:00Z", "2025-03-20T20:00:00Z")];
+    const r = run(["Downtown Cinema 7,Spider-Man: Across the Spider-Verse,Auditorium 1,2025-03-20T18:00:00Z,2025-03-20T20:00:00Z,EN,2D,PG,"], current);
     expect(r.rows[0]!.outcome).toBe("add");
+    expect(r.archives.map((a) => a.id)).toEqual(["into"]);
+  });
+
+  test("P0 typos and joined words still match", () => {
+    const current = [existing("s", "Spider-Man: Homecoming", "Auditorium 1", "2025-03-20T18:00:00Z", "2025-03-20T20:13:00Z")];
+    const r = run(["Downtown Cinema 7,Spiderman Homecomming,Auditorium 1,2025-03-20T18:00:00Z,2025-03-20T20:13:00Z,EN,2D,PG,"], current);
+    expect(r.rows[0]!.showtimeId).toBe("s");
+    expect(r.rows[0]!.matchMethod).toBe("fuzzy_title");
+  });
+
+  test("P0 two spellings of one new film at one start: one add, one duplicate", () => {
+    const r = run(
+      [
+        "Downtown Cinema 7,Spiderman Homecoming,Auditorium 1,2025-03-20T18:00:00Z,2025-03-20T20:13:00Z,EN,2D,PG,",
+        "Downtown Cinema 7,Spider-Man: Homecoming,Auditorium 2,2025-03-20T18:00:00Z,2025-03-20T20:13:00Z,EN,2D,PG,",
+      ],
+      [],
+    );
+    expect(r.rows.map((x) => x.outcome)).toEqual(["add", "duplicate"]);
+    expect(r.rows[1]!.duplicateOf).toBe(2);
+    expect(r.rows[1]!.warnings[0]!.message).toContain('Same film and start time as line 2 ("Spiderman Homecoming")');
+  });
+
+  test("duplicates keep the row with the newer last_updated", () => {
+    const r = run(
+      [
+        "Downtown Cinema 7,Wonka,Auditorium 3,2025-03-20T16:00:00Z,2025-03-20T17:56:00Z,EN,2D,PG,2025-03-10T00:00:00Z",
+        "Downtown Cinema 7,Wonka,Auditorium 4,2025-03-20T16:00:00Z,2025-03-20T17:56:00Z,EN,2D,PG,2025-03-12T00:00:00Z",
+      ],
+      [],
+    );
+    expect(r.rows.map((x) => x.outcome)).toEqual(["duplicate", "add"]);
+    expect(r.rows[0]!.duplicateOf).toBe(3);
+    expect(r.rows[0]!.warnings[0]!.message).toBe("Same movie and start time as line 3 but different auditorium; kept line 3 (it has the newer last_updated).");
   });
 
   test("V8 feed older than stored data warns but still applies", () => {

@@ -4,7 +4,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { and, eq, gt, lt } from "drizzle-orm";
-import { db } from "../db/client";
+import { db, type Queryable } from "../db/client";
 import { sessions, users } from "../db/schema";
 import { isProd } from "../env";
 
@@ -23,10 +23,14 @@ export interface SessionUser {
   mustChangePassword: boolean;
 }
 
-export async function createSession(userId: string, meta: { ip: string | null; userAgent: string | null }) {
+export async function createSession(
+  userId: string,
+  meta: { ip: string | null; userAgent: string | null },
+  q: Queryable = db,
+) {
   const token = randomBytes(32).toString("base64url");
   const now = Date.now();
-  await db.insert(sessions).values({
+  await q.insert(sessions).values({
     userId,
     tokenHash: hashToken(token),
     expiresAt: new Date(now + IDLE_MS),
@@ -73,14 +77,17 @@ export async function deleteSession(sessionId: string) {
   await db.delete(sessions).where(eq(sessions.id, sessionId));
 }
 
-/** Sign a user out everywhere (deactivation, password reset, super admin change). */
-export async function revokeUserSessions(userId: string, exceptSessionId?: string) {
-  const all = await db.select({ id: sessions.id }).from(sessions).where(eq(sessions.userId, userId));
-  for (const s of all) if (s.id !== exceptSessionId) await deleteSession(s.id);
+/**
+ * Sign a user out everywhere (deactivation, password reset, super admin change).
+ * Takes the request transaction so the sign-out commits or rolls back with the change.
+ */
+export async function revokeUserSessions(tx: Queryable, userId: string) {
+  await tx.delete(sessions).where(eq(sessions.userId, userId));
 }
 
-export async function purgeExpiredSessions() {
-  await db.delete(sessions).where(lt(sessions.expiresAt, new Date()));
+/** Runs hourly on the Bun server and on every successful login (Vercel has no long-lived process). */
+export async function purgeExpiredSessions(q: Queryable = db) {
+  await q.delete(sessions).where(lt(sessions.expiresAt, new Date()));
 }
 
 export function sessionCookie(token: string) {

@@ -153,9 +153,27 @@ describe("header", () => {
     expect(fileError(() => parseShowtimeCsv(bytes(`${HEADER},rating\n${ROW},PG\n`), OPTS)).code).toBe(
       "duplicate_header",
     );
-    const e = fileError(() => parseShowtimeCsv(bytes(`${HEADER},film\n${ROW},Wonka\n`), OPTS));
+    // Two equally good names for one column are ambiguous.
+    const e = fileError(() => parseShowtimeCsv(bytes(`${HEADER},Movie Title\n${ROW},Wonka\n`), OPTS));
     expect(e.code).toBe("duplicate_header");
     expect(e.message).toContain("movie_title");
+  });
+
+  test("H5 the canonical header wins over an alias for the same column; the alias is ignored with a notice", () => {
+    const parsed = parseShowtimeCsv(bytes(`${HEADER},film,location\n${ROW},Something Else,Main St\n`), OPTS);
+    expect(parsed.rows[0]!.errors).toEqual([]);
+    expect(parsed.rows[0]!.value?.movieTitle).not.toBe("Something Else");
+    expect(parsed.notices).toContain('Ignored the "film" column: "movie_title" is used for movie_title.');
+    expect(parsed.notices).toContain('Ignored the "location" column: "theater_name" is used for theater_name.');
+  });
+
+  test("H5 between two aliases, the closer name wins", () => {
+    const parsed = parseShowtimeCsv(
+      bytes("theater,location,title,name,auditorium,start_time,end_time\nDowntown Cinema 7,Main St,Wonka,Other,Auditorium 3,2025-03-15T16:00:00Z,2025-03-15T17:56:00Z\n"),
+      OPTS,
+    );
+    expect(parsed.rows[0]!.value?.theaterName).toBe("Downtown Cinema 7");
+    expect(parsed.rows[0]!.value?.movieTitle).toBe("Wonka");
   });
 
   test("H5 empty header name is refused, but a trailing comma is tolerated", () => {
@@ -202,6 +220,15 @@ describe("rows (messy-rows.csv)", () => {
     const row = byLine.get(10)!;
     expect(row.value?.movieTitle).toBe('=HYPERLINK("x")');
     expect(row.warnings[0]!.message).toContain("formula");
+  });
+
+  test("R5 the OWASP formula characters -, tab and CR are flagged too", () => {
+    for (const title of ["-2+3", "\t=1+1", "@SUM(A1)", "+1"]) {
+      const parsed = parseShowtimeCsv(bytes(`${HEADER}\n${ROW.replace("Wonka", `"${title}"`)}\n`), OPTS);
+      expect(parsed.rows[0]!.warnings.map((w) => w.message)).toContain("Starts with a spreadsheet formula character; stored as plain text.");
+    }
+    const plain = parseShowtimeCsv(bytes(`${HEADER}\n${ROW}\n`), OPTS);
+    expect(plain.rows[0]!.warnings).toEqual([]);
   });
 
   test("R3 required value empty", () => {

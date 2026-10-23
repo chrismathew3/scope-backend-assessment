@@ -19,7 +19,7 @@ import {
   UserView,
 } from "@scope/shared";
 import { TRPCError } from "@trpc/server";
-import { and, asc, count, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { generateTemporaryPassword, hashPassword } from "../../auth/password";
 import { assertNotDemoAccount } from "../../auth/demo";
@@ -100,12 +100,17 @@ async function getUserOr404(ctx: AuthedContext, id: string) {
   return u;
 }
 
-async function activeSuperAdminCount(tx: Tx) {
-  const [r] = await tx
-    .select({ n: count() })
+/**
+ * Locks the active super admin rows, then counts them. Two requests removing
+ * different super admins at once serialize here, so the last one can't be removed.
+ */
+async function lockActiveSuperAdmins(tx: Tx) {
+  const rows = await tx
+    .select({ id: users.id })
     .from(users)
-    .where(and(eq(users.isSuperAdmin, true), eq(users.status, "active")));
-  return r?.n ?? 0;
+    .where(and(eq(users.isSuperAdmin, true), eq(users.status, "active")))
+    .for("update");
+  return rows.length;
 }
 
 function assertNotSelf(ctx: AuthedContext, userId: string, what: string) {
@@ -114,10 +119,11 @@ function assertNotSelf(ctx: AuthedContext, userId: string, what: string) {
 
 /** Can the caller grant/remove this role in this theater? */
 function assertCanManageMembership(ctx: AuthedContext, theaterId: string, role: "admin" | "viewer") {
-  if (can(ctx.principal, "member.manageAll")) return;
+  // theaterRoles holds live (non-archived) theaters only, for super admins too.
   if (!(theaterId in ctx.principal.theaterRoles)) {
     throw new TRPCError({ code: "NOT_FOUND", message: "Theater not found" });
   }
+  if (can(ctx.principal, "member.manageAll")) return;
   if (role !== "viewer" || !can(ctx.principal, "member.manageViewers", theaterId)) {
     throw new TRPCError({ code: "FORBIDDEN", message: "Only a super admin can grant or remove admin access" });
   }
@@ -200,7 +206,7 @@ export const usersRouter = router({
       if (input.isSuperAdmin !== undefined && input.isSuperAdmin !== before.isSuperAdmin) {
         assertNotSelf(ctx, input.id, "change super admin on");
         assertNotDemoAccount(input.id, "promoted or demoted");
-        if (!input.isSuperAdmin && (await activeSuperAdminCount(ctx.tx)) <= 1) {
+        if (!input.isSuperAdmin && (await lockActiveSuperAdmins(ctx.tx)) <= 1) {
           throw new TRPCError({ code: "BAD_REQUEST", message: "There must be at least one super admin" });
         }
       }
@@ -209,7 +215,7 @@ export const usersRouter = router({
         .set({ name: input.name, isSuperAdmin: input.isSuperAdmin })
         .where(eq(users.id, input.id));
       if (input.isSuperAdmin !== undefined && input.isSuperAdmin !== before.isSuperAdmin) {
-        await revokeUserSessions(input.id);
+        await revokeUserSessions(ctx.tx, input.id);
       }
       await audit(ctx, {
         action: "user.update",
@@ -229,11 +235,11 @@ export const usersRouter = router({
       assertNotSelf(ctx, input.id, "deactivate");
       assertNotDemoAccount(input.id, "deactivated");
       const before = await getUserOr404(ctx, input.id);
-      if (before.isSuperAdmin && before.status === "active" && (await activeSuperAdminCount(ctx.tx)) <= 1) {
+      if (before.isSuperAdmin && before.status === "active" && (await lockActiveSuperAdmins(ctx.tx)) <= 1) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "There must be at least one super admin" });
       }
       await ctx.tx.update(users).set({ status: "deactivated" }).where(eq(users.id, input.id));
-      await revokeUserSessions(input.id);
+      await revokeUserSessions(ctx.tx, input.id);
       await audit(ctx, { action: "user.deactivate", entityType: "user", entityId: input.id });
       return getUserOr404(ctx, input.id);
     }),
@@ -262,7 +268,7 @@ export const usersRouter = router({
         .update(users)
         .set({ passwordHash: await hashPassword(temporaryPassword), mustChangePassword: true })
         .where(eq(users.id, input.id));
-      await revokeUserSessions(input.id);
+      await revokeUserSessions(ctx.tx, input.id);
       await audit(ctx, { action: "user.password_reset", entityType: "user", entityId: input.id });
       return { temporaryPassword };
     }),
@@ -278,7 +284,7 @@ export const membershipsRouter = router({
       assertNotSelf(ctx, input.userId, "change theater access for");
       assertCanManageMembership(ctx, input.theaterId, input.role);
       const [target] = await ctx.tx
-        .select({ id: users.id, isSuperAdmin: users.isSuperAdmin })
+        .select({ id: users.id })
         .from(users)
         .where(eq(users.id, input.userId));
       if (!target) throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });

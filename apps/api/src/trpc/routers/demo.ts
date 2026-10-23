@@ -9,7 +9,7 @@ import { audit } from "../../services/audit";
 import { authedProcedure, router } from "../init";
 
 /** The seeded fixture in the shape app_demo_reset() expects. */
-export function demoPayload() {
+function demoPayload() {
   return {
     theaters: fixtures.theaters,
     users: fixtures.users.map((u) => ({

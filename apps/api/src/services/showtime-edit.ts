@@ -44,8 +44,28 @@ export function normalizeShowtimeFields(input: ShowtimeFieldInput): ShowtimePatc
   return out;
 }
 
+const NEW_SHOWTIME_FIELDS = [
+  "movieTitle",
+  "movieTitleKey",
+  "auditorium",
+  "auditoriumKey",
+  "startTime",
+  "endTime",
+  "language",
+  "format",
+  "rating",
+] as const;
+type NewShowtimeFields = Required<Pick<ShowtimePatch, (typeof NEW_SHOWTIME_FIELDS)[number]>>;
+
+/** Like normalizeShowtimeFields, for a create where every field is given. */
+export function normalizeNewShowtime(input: Required<ShowtimeFieldInput>): NewShowtimeFields {
+  const out = normalizeShowtimeFields(input);
+  for (const f of NEW_SHOWTIME_FIELDS) if (out[f] === undefined) throw new ShowtimeFieldError(`${f} is required`);
+  return out as NewShowtimeFields;
+}
+
 /** Fields shown in audit entries and compared to decide what changed. */
-export const AUDITED_FIELDS = [
+const AUDITED_FIELDS = [
   "movieTitle",
   "auditorium",
   "startTime",

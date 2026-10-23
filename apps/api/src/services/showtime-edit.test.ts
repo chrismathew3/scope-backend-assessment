@@ -7,7 +7,7 @@ import {
   toZonedFields,
 } from "@scope/shared";
 import type { showtimes } from "../db/schema";
-import { diffShowtime, normalizeShowtimeFields, ShowtimeFieldError } from "./showtime-edit";
+import { diffShowtime, normalizeNewShowtime, normalizeShowtimeFields, ShowtimeFieldError } from "./showtime-edit";
 
 const messages = (r: { success: boolean; error?: { issues: { message: string }[] } }) =>
   r.error?.issues.map((i) => i.message) ?? [];
@@ -166,5 +166,21 @@ describe("theater-local form times", () => {
 
   test("a time skipped by daylight saving is an error", () => {
     expect(fromZonedFields("2026-03-08", "02:30", "America/New_York").ok).toBe(false);
+  });
+});
+
+describe("normalizeNewShowtime", () => {
+  const { theaterId: _theaterId, ...fields } = createBase;
+  test("returns every column a new showtime needs", () => {
+    const out = normalizeNewShowtime({ ...fields, language: "english", format: "imax", rating: "pg-13" });
+    expect(out.movieTitleKey).toBeTruthy();
+    expect(out.auditoriumKey).toBeTruthy();
+    expect(out.format).toBe("IMAX");
+    expect(out.startTime).toBeInstanceOf(Date);
+  });
+  test("a field that cleans to nothing is a field error", () => {
+    expect(() => normalizeNewShowtime({ ...fields, language: "en", format: "2D", rating: "PG", movieTitle: "   " })).toThrow(
+      ShowtimeFieldError,
+    );
   });
 });

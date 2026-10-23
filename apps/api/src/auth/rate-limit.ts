@@ -2,34 +2,38 @@
  * Login throttling: 5 failed attempts per (IP, email) within 15 minutes, plus a
  * loose 100-per-IP ceiling against password spraying. The per-IP ceiling is high on
  * purpose: a team behind one office IP shouldn't lock each other out with typos.
- * In-memory is fine for one API process; swap for Postgres or Redis when running more than one.
+ * The IP comes from app.ts clientIp(), never from a client-set header.
+ * Counts live in Postgres so they hold across serverless instances.
  */
-const WINDOW_MS = 15 * 60 * 1000;
-const buckets = new Map<string, number[]>();
+import { and, eq, lt, sql } from "drizzle-orm";
+import { db } from "../db/client";
+import { loginFailures } from "../db/schema";
 
-function hits(key: string, now: number) {
-  const recent = (buckets.get(key) ?? []).filter((t) => now - t < WINDOW_MS);
-  buckets.set(key, recent);
-  return recent;
+const WINDOW = sql`now() - interval '15 minutes'`;
+
+/** Seconds until the caller may try again, or null if not blocked. */
+export async function loginBlocked(ip: string, email: string): Promise<number | null> {
+  const [row] = await db.execute<{ pair: number; per_ip: number; wait: number | null }>(sql`
+    select
+      count(*) filter (where email = ${email})::int as pair,
+      count(*)::int as per_ip,
+      ceil(extract(epoch from (
+        case when count(*) filter (where email = ${email}) >= 5
+          then min(created_at) filter (where email = ${email})
+          else min(created_at) end
+      ) + interval '15 minutes' - now()))::int as wait
+    from login_failure
+    where ip = ${ip} and created_at > ${WINDOW}`);
+  if (!row || (row.pair < 5 && row.per_ip < 100)) return null;
+  return Math.max(1, row.wait ?? 1);
 }
 
-export function loginBlocked(ip: string | null, email: string): number | null {
-  const now = Date.now();
-  const pair = hits(`pair:${ip}:${email}`, now);
-  const perIp = hits(`ip:${ip}`, now);
-  if (pair.length >= 5 || perIp.length >= 100) {
-    const oldest = Math.min(...(pair.length >= 5 ? pair : perIp));
-    return Math.ceil((oldest + WINDOW_MS - now) / 1000);
-  }
-  return null;
+export async function recordLoginFailure(ip: string, email: string) {
+  await db.insert(loginFailures).values({ ip, email });
 }
 
-export function recordLoginFailure(ip: string | null, email: string) {
-  const now = Date.now();
-  hits(`pair:${ip}:${email}`, now).push(now);
-  hits(`ip:${ip}`, now).push(now);
-}
-
-export function clearLoginFailures(ip: string | null, email: string) {
-  buckets.delete(`pair:${ip}:${email}`);
+/** On success: forget this pair's failures and drop anything past the window. */
+export async function clearLoginFailures(ip: string, email: string) {
+  await db.delete(loginFailures).where(and(eq(loginFailures.ip, ip), eq(loginFailures.email, email)));
+  await db.delete(loginFailures).where(lt(loginFailures.createdAt, WINDOW));
 }

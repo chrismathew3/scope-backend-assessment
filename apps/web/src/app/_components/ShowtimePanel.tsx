@@ -14,6 +14,7 @@ import {
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { X } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { movieStatusLabel, statusLabel } from "~/lib/labels";
 import { errorMessage, httpStatusOf, useTRPC } from "~/lib/trpc";
 import { button, field, selectField } from "~/lib/ui";
@@ -100,10 +101,13 @@ export function ShowtimePanel({
   suggestions,
   onClose,
   onSaved,
+  returnFocusTo,
 }: {
   mode: ShowtimePanelMode;
   adminTheaters: TheaterOption[];
   suggestions: Suggestions;
+  /** Where focus goes back to on close (row clicks open the panel without focusing anything). */
+  returnFocusTo?: HTMLElement | null;
   onClose: () => void;
   onSaved: (row: AdminRow, created: boolean) => void;
 }) {
@@ -123,13 +127,15 @@ export function ShowtimePanel({
 
   const timeZone = tzOf[form.theaterId] ?? "UTC";
   const theater = adminTheaters.find((t) => t.id === form.theaterId);
-  const endsNextDay = Boolean(form.start && form.end && form.end <= form.start);
+  const endsNextDay = Boolean(form.start && form.end && form.end < form.start);
 
-  // Esc closes; focus goes back to whatever opened the panel; the page behind doesn't scroll.
+  // Esc closes; the page behind is inert and doesn't scroll; focus goes back to the opener.
+  const rootRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+  const returnRef = useRef(returnFocusTo);
   useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null;
+    const opener = returnRef.current ?? (document.activeElement as HTMLElement | null);
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
@@ -139,10 +145,15 @@ export function ShowtimePanel({
     document.addEventListener("keydown", onKey);
     const overflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
+    const background = [...document.body.children].filter((el) => el !== rootRef.current && !el.hasAttribute("inert"));
+    for (const el of background) el.setAttribute("inert", "");
+    // Focus can't stay behind an inert page (in dev, Strict Mode's re-run lands it on the opener).
+    if (!rootRef.current?.contains(document.activeElement)) rootRef.current?.querySelector("input")?.focus();
     return () => {
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = overflow;
-      opener?.focus?.();
+      for (const el of background) el.removeAttribute("inert");
+      if (opener?.isConnected) opener.focus();
     };
   }, []);
 
@@ -183,6 +194,10 @@ export function ShowtimePanel({
     }
     if (!form.start || !form.end) {
       setError(!form.start ? "Enter a start time" : "Enter an end time");
+      return;
+    }
+    if (form.start === form.end) {
+      setError("End time must be different from the start time");
       return;
     }
     const t = times();
@@ -243,8 +258,8 @@ export function ShowtimePanel({
   const titleId = `${ids}-title`;
   const label = "mb-1.5 block text-[13px] font-medium";
 
-  return (
-    <div className="fixed inset-0 z-40">
+  return createPortal(
+    <div ref={rootRef} className="fixed inset-0 z-40">
       <div aria-hidden className="scrim-in absolute inset-0 bg-black/15" onClick={onClose} />
       <div
         role="dialog"
@@ -455,7 +470,8 @@ export function ShowtimePanel({
           </div>
         </form>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

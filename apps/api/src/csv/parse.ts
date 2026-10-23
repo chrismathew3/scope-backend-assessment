@@ -72,17 +72,54 @@ const HEADER_ALIASES: Record<Column, string[]> = {
   last_updated: ["lastupdated", "updated", "updatedat", "modified", "lastmodified"],
 };
 
-const ALIAS_TO_COLUMN = new Map<string, Column>();
-for (const col of COLUMNS) for (const alias of HEADER_ALIASES[col]) ALIAS_TO_COLUMN.set(alias, col);
+// Rank = position in the alias list; 0 is the canonical name ("theatername" for theater_name).
+const ALIAS_TO_COLUMN = new Map<string, { col: Column; rank: number }>();
+for (const col of COLUMNS) HEADER_ALIASES[col].forEach((alias, rank) => ALIAS_TO_COLUMN.set(alias, { col, rank }));
 
-export function headerToColumn(header: string): Column | undefined {
-  return ALIAS_TO_COLUMN.get(cleanText(header).toLowerCase().replace(/[^a-z0-9]/g, ""));
+const aliasOf = (header: string) => ALIAS_TO_COLUMN.get(cleanText(header).toLowerCase().replace(/[^a-z0-9]/g, ""));
+
+function headerToColumn(header: string): Column | undefined {
+  return aliasOf(header)?.col;
+}
+
+/**
+ * Picks which header feeds each column. The closest name wins (the canonical one, then
+ * aliases in list order), so "theater_name" beats "location"; the losers are ignored.
+ * Only two headers that are equally good names for one column are ambiguous.
+ */
+function assignColumns(headers: string[]): { columnIndex: Map<Column, number>; shadowed: string[] } {
+  const best = new Map<Column, { index: number; rank: number }>();
+  headers.forEach((h, index) => {
+    const a = aliasOf(h);
+    if (!a) return;
+    const current = best.get(a.col);
+    if (current && current.rank === a.rank) {
+      throw new CsvFileError("duplicate_header", `"${headers[current.index]}" and "${h}" both look like the ${a.col} column.`);
+    }
+    if (!current || a.rank < current.rank) best.set(a.col, { index, rank: a.rank });
+  });
+  const columnIndex = new Map([...best].map(([col, { index }]) => [col, index] as const));
+  const used = new Set(columnIndex.values());
+  const shadowed = headers.filter((h, i) => aliasOf(h) && !used.has(i));
+  return { columnIndex, shadowed };
+}
+
+/** The value of `col` in a row's raw cells, using the same header precedence as the parser. */
+export function columnCell(raw: Record<string, string>, col: Column): string | undefined {
+  let found: { value: string; rank: number } | undefined;
+  for (const [header, value] of Object.entries(raw)) {
+    const a = aliasOf(header);
+    if (a?.col === col && (!found || a.rank < found.rank)) found = { value, rank: a.rank };
+  }
+  return found?.value;
 }
 
 /** Defaults used when an optional column is missing from the file entirely. */
 const OPTIONAL_DEFAULTS = { language: "EN", format: "2D", rating: "NR" } as const;
 
 const MAX_CELL = 300;
+/** Cells starting with these run as formulas when a spreadsheet opens an export. Title and auditorium are text, so "-" is safe to flag. */
+const FORMULA_START = /^[=+\-@\t\r]/;
 const MIN_RUNTIME_MS = 30 * 60_000;
 const MAX_RUNTIME_MS = 6 * 3600_000;
 
@@ -228,23 +265,13 @@ export function parseShowtimeCsv(bytes: Uint8Array, opts: ParseOptions): ParsedF
   }
 
   const seenNames = new Set<string>();
-  const columnIndex = new Map<Column, number>();
-  const ignored: string[] = [];
-  headers.forEach((h, i) => {
+  for (const h of headers) {
     const lower = h.toLowerCase();
     if (seenNames.has(lower)) throw new CsvFileError("duplicate_header", `The column "${h}" appears twice.`);
     seenNames.add(lower);
-    const col = headerToColumn(h);
-    if (!col) {
-      ignored.push(h);
-      return;
-    }
-    if (columnIndex.has(col)) {
-      const other = headers[columnIndex.get(col)!]!;
-      throw new CsvFileError("duplicate_header", `"${other}" and "${h}" both look like the ${col} column.`);
-    }
-    columnIndex.set(col, i);
-  });
+  }
+  const { columnIndex, shadowed } = assignColumns(headers);
+  const ignored = headers.filter((h) => !headerToColumn(h));
 
   const missing = REQUIRED.filter((c) => !columnIndex.has(c));
   if (missing.length > 0) {
@@ -254,6 +281,10 @@ export function parseShowtimeCsv(bytes: Uint8Array, opts: ParseOptions): ParsedF
     );
   }
   if (ignored.length > 0) notices.push(`Ignored columns: ${ignored.join(", ")}.`);
+  for (const h of shadowed) {
+    const col = headerToColumn(h)!;
+    notices.push(`Ignored the "${h}" column: "${headers[columnIndex.get(col)!]}" is used for ${col}.`);
+  }
   for (const col of ["language", "format", "rating"] as const) {
     if (!columnIndex.has(col)) {
       notices.push(`No ${col} column; every row uses "${OPTIONAL_DEFAULTS[col]}".`);
@@ -346,7 +377,9 @@ function parseRow(
     ["movie_title", movieTitle],
     ["auditorium", auditorium],
   ] as const) {
-    if (/^[=+@]/.test(v)) {
+    // OWASP's CSV-injection list. Checked on the raw cell too, since cleaning trims a leading tab or CR.
+    const rawCell = record.cells[columnIndex.get(col)!] ?? "";
+    if (FORMULA_START.test(v) || FORMULA_START.test(rawCell)) {
       warnings.push({
         column: col,
         message: "Starts with a spreadsheet formula character; stored as plain text.",

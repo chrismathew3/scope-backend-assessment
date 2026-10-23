@@ -12,7 +12,7 @@ export interface ContextOptions {
   req: Request;
   /** Only append is used (Set-Cookie). Both adapters can provide it. */
   resHeaders: Pick<Headers, "append">;
-  ip: string | null;
+  ip: string;
 }
 
 export async function createContext({ req, resHeaders, ip }: ContextOptions) {
@@ -34,9 +34,13 @@ const t = initTRPC
   .meta<OpenApiMeta>()
   .context<Context>()
   .create({
-    errorFormatter({ shape, error }) {
+    errorFormatter({ shape, error, path }) {
+      // Unexpected errors can carry SQL or stack details: log them, send a generic message.
+      const internal = error.code === "INTERNAL_SERVER_ERROR";
+      if (internal) console.error(`[trpc] ${path ?? "unknown"} failed:`, error.cause ?? error);
       return {
         ...shape,
+        message: internal ? "Something went wrong" : shape.message,
         data: {
           ...shape.data,
           stack: undefined,
@@ -76,27 +80,38 @@ async function loadPrincipal(user: SessionUser): Promise<Principal & { theaterNa
 
 class Rollback extends Error {}
 
-/**
- * Signed-in procedures. Each call runs in one transaction that tells Postgres
- * who the user is, so row-level security applies to every query, and any
- * error rolls back everything the call wrote (including audit rows).
- */
 const ALLOWED_BEFORE_PASSWORD_CHANGE = new Set(["me.get", "auth.changePassword", "auth.logout"]);
 
-export const authedProcedure = t.procedure.use(async ({ ctx, next, path }) => {
+async function signedIn(ctx: Context, path: string) {
   const user = ctx.user;
   if (!user) throw new TRPCError({ code: "UNAUTHORIZED", message: "Sign in required" });
   // Accounts created with a temporary password must set their own first.
   if (user.mustChangePassword && !ALLOWED_BEFORE_PASSWORD_CHANGE.has(path)) {
     throw new TRPCError({ code: "FORBIDDEN", message: "Set a new password first" });
   }
-  const principal = await loadPrincipal(user);
+  return { user, principal: await loadPrincipal(user) };
+}
+
+/** One short transaction that tells Postgres who the user is, so row-level security applies. */
+function transactionAs<T>(userId: string, fn: (tx: Tx) => Promise<T>): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('app.user_id', ${userId}, true)`);
+    return fn(tx);
+  });
+}
+
+/**
+ * Signed-in procedures. Each call runs in one transaction that tells Postgres
+ * who the user is, so row-level security applies to every query, and any
+ * error rolls back everything the call wrote (including audit rows).
+ */
+export const authedProcedure = t.procedure.use(async ({ ctx, next, path }) => {
+  const { user, principal } = await signedIn(ctx, path);
 
   const run = (tx: Tx) => next({ ctx: { ...ctx, user, principal, tx } });
   let result: Awaited<ReturnType<typeof run>> | undefined;
   try {
-    await db.transaction(async (tx) => {
-      await tx.execute(sql`select set_config('app.user_id', ${user.id}, true)`);
+    await transactionAs(user.id, async (tx) => {
       result = await run(tx);
       if (!result.ok) throw new Rollback();
     });
@@ -104,6 +119,17 @@ export const authedProcedure = t.procedure.use(async ({ ctx, next, path }) => {
     if (!(e instanceof Rollback)) throw e;
   }
   return result!;
+});
+
+/**
+ * Signed-in procedures that wait on something slow (the import agent's model call).
+ * No transaction is held open; the handler opens short ones with ctx.withTx, each
+ * with the same row-level security as authedProcedure.
+ */
+export const authedProcedureWithoutTx = t.procedure.use(async ({ ctx, next, path }) => {
+  const { user, principal } = await signedIn(ctx, path);
+  const withTx = <T>(fn: (tx: Tx) => Promise<T>) => transactionAs(user.id, fn);
+  return next({ ctx: { ...ctx, user, principal, withTx } });
 });
 
 export const superAdminProcedure = authedProcedure.use(({ ctx, next }) => {
@@ -117,11 +143,15 @@ export type AuthedContext = Context & {
   tx: Tx;
 };
 
+export type AuthedContextWithoutTx = Omit<AuthedContext, "tx"> & {
+  withTx: <T>(fn: (tx: Tx) => Promise<T>) => Promise<T>;
+};
+
 /**
  * Theater-level check. Not a member -> 404 (don't reveal the theater exists);
  * member without the permission -> 403.
  */
-export function requireTheater(ctx: AuthedContext, theaterId: string, permission: TheaterPermission) {
+export function requireTheater(ctx: Pick<AuthedContext, "principal">, theaterId: string, permission: TheaterPermission) {
   if (!(theaterId in ctx.principal.theaterRoles)) {
     throw new TRPCError({ code: "NOT_FOUND", message: "Theater not found" });
   }

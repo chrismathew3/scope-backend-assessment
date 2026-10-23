@@ -1,5 +1,5 @@
 /**
- * Database schema. Shape comes from apps/web/src/data/assessment-data.ts and
+ * Database schema. Shape comes from src/db/fixtures.ts and
  * sample-data/*.csv. SQL that Drizzle can't express (extensions, RLS, grants)
  * lives in the hand-written migrations under ../../drizzle.
  */
@@ -79,6 +79,18 @@ export const users = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [uniqueIndex("user_email_lower_uq").on(sql`lower(${t.email})`)],
+);
+
+// Failed sign-ins for throttling. In Postgres, not memory, so every server instance sees the same count.
+export const loginFailures = pgTable(
+  "login_failure",
+  {
+    id: id(),
+    ip: text("ip").notNull(),
+    email: text("email").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("login_failure_ip_idx").on(t.ip, t.createdAt)],
 );
 
 export const sessions = pgTable(
@@ -175,8 +187,6 @@ export const showtimes = pgTable(
     // Default list view + keyset cursor.
     index("showtime_scope_idx").on(t.theaterId, t.status, t.startTime, t.id),
     index("showtime_start_idx").on(t.startTime, t.id),
-    // Name search at scale: substring + fuzzy via pg_trgm.
-    index("showtime_title_trgm_idx").using("gin", t.movieTitleKey.op("gin_trgm_ops")),
     index("showtime_title_sort_idx").on(t.movieTitleKey, t.id),
     index("showtime_updated_idx").on(t.updatedAt, t.id),
     index("showtime_end_idx").on(t.endTime, t.id),

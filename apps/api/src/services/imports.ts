@@ -7,12 +7,12 @@
  * database side.
  */
 import { createHash } from "node:crypto";
-import type { AgentRun, ImportDetail, ImportSummary } from "@scope/shared";
+import { type AgentRun, type ImportDetail, type ImportSummary, isLargeArchive } from "@scope/shared";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { runReconciliationAgent } from "../ai/agent";
 import { resolveModel } from "../ai/model";
-import { type FinalRow, mergeAgentReview } from "../ai/verify";
+import { type FinalRow, mergeAgentReview, summarizeMerge } from "../ai/verify";
 import { CsvFileError, type ExistingShowtime, parseShowtimeCsv, reconcile } from "../csv";
 import type { Tx } from "../db/client";
 import {
@@ -25,7 +25,7 @@ import {
   theaters,
   users,
 } from "../db/schema";
-import type { AuthedContext } from "../trpc/init";
+import { type AuthedContext, type AuthedContextWithoutTx, requireTheater } from "../trpc/init";
 import { audit } from "./audit";
 
 const PREVIEW_TTL_MS = 30 * 60 * 1000;
@@ -38,10 +38,14 @@ function chunks<T>(items: T[], size = CHUNK): T[][] {
   return out;
 }
 
-function normalizedOf(row: FinalRow): NormalizedRow | null {
+/** The stored row also keeps the partner's own spelling when the stored title was kept instead. */
+type StoredNormalized = NormalizedRow & { partnerTitle?: string };
+
+function normalizedOf(row: FinalRow): StoredNormalized | null {
   const v = row.value;
   if (!v) return null;
   return {
+    ...(row.partnerTitle !== undefined && { partnerTitle: row.partnerTitle }),
     movieTitle: v.movieTitle,
     movieTitleKey: v.movieTitleKey,
     auditorium: v.auditorium,
@@ -85,10 +89,10 @@ async function loadExisting(tx: Tx, theaterId: string, startTimes: Date[]): Prom
           and(
             eq(showtimes.theaterId, theaterId),
             eq(showtimes.status, "archived"),
-            sql`${showtimes.startTime} = any(${sql.raw("array[")}${sql.join(
-              part.map((iso) => sql`${iso}::timestamptz`),
-              sql`, `,
-            )}${sql.raw("]")})`,
+            inArray(
+              showtimes.startTime,
+              part.map((iso) => new Date(iso)),
+            ),
           ),
         )),
     );
@@ -99,41 +103,57 @@ async function loadExisting(tx: Tx, theaterId: string, startTimes: Date[]): Prom
 const IMPORT_LIMIT = 30;
 const IMPORT_WINDOW_MIN = 10;
 
+/**
+ * Two short transactions with the model call between them, so no pooled connection
+ * sits idle in a transaction while the agent thinks. The preview records the
+ * schedule version read in the first one; apply refuses it if anything changed since.
+ */
 export async function createImport(
-  ctx: AuthedContext,
+  ctx: AuthedContextWithoutTx,
   input: { theaterId: string; filename: string; contentBase64: string },
 ): Promise<ImportDetail> {
-  const { tx } = ctx;
-  const [theater] = await tx.select().from(theaters).where(eq(theaters.id, input.theaterId));
-  if (!theater) throw new TRPCError({ code: "NOT_FOUND", message: "Theater not found" });
-
-  // Every upload runs the model, which costs money: cap each account's pace.
-  const [recent] = await tx
-    .select({ n: sql<number>`count(*)::int` })
-    .from(imports)
-    .where(and(eq(imports.uploadedBy, ctx.user.id), sql`${imports.createdAt} > now() - make_interval(mins => ${IMPORT_WINDOW_MIN})`));
-  if ((recent?.n ?? 0) >= IMPORT_LIMIT) {
-    throw new TRPCError({
-      code: "TOO_MANY_REQUESTS",
-      message: `You've uploaded ${IMPORT_LIMIT} files in the last ${IMPORT_WINDOW_MIN} minutes. Try again in a few minutes.`,
-    });
-  }
-
   const bytes = new Uint8Array(Buffer.from(input.contentBase64, "base64"));
-  let parsed;
-  try {
-    parsed = parseShowtimeCsv(bytes, { theaterName: theater.name, timezone: theater.timezone });
-  } catch (e) {
-    if (e instanceof CsvFileError) throw new TRPCError({ code: "BAD_REQUEST", message: e.message, cause: e });
-    throw e;
-  }
+  const sha = createHash("sha256").update(bytes).digest("hex");
 
-  const startTimes = parsed.rows.flatMap((r) => (r.value ? [r.value.startTime] : []));
-  const existing = await loadExisting(tx, theater.id, startTimes);
+  // 1. Read: checks, parse, current schedule.
+  const { theater, parsed, existing, sameFile } = await ctx.withTx(async (tx) => {
+    const [theater] = await tx.select().from(theaters).where(eq(theaters.id, input.theaterId));
+    if (!theater) throw new TRPCError({ code: "NOT_FOUND", message: "Theater not found" });
+
+    // Every upload runs the model, which costs money: cap each account's pace.
+    const [recent] = await tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(imports)
+      .where(and(eq(imports.uploadedBy, ctx.user.id), sql`${imports.createdAt} > now() - make_interval(mins => ${IMPORT_WINDOW_MIN})`));
+    if ((recent?.n ?? 0) >= IMPORT_LIMIT) {
+      throw new TRPCError({
+        code: "TOO_MANY_REQUESTS",
+        message: `You've uploaded ${IMPORT_LIMIT} files in the last ${IMPORT_WINDOW_MIN} minutes. Try again in a few minutes.`,
+      });
+    }
+
+    let parsed;
+    try {
+      parsed = parseShowtimeCsv(bytes, { theaterName: theater.name, timezone: theater.timezone });
+    } catch (e) {
+      if (e instanceof CsvFileError) throw new TRPCError({ code: "BAD_REQUEST", message: e.message, cause: e });
+      throw e;
+    }
+    const startTimes = parsed.rows.flatMap((r) => (r.value ? [r.value.startTime] : []));
+    const existing = await loadExisting(tx, theater.id, startTimes);
+    const [sameFile] = await tx
+      .select({ appliedAt: imports.appliedAt })
+      .from(imports)
+      .where(and(eq(imports.theaterId, theater.id), eq(imports.fileSha256, sha), eq(imports.status, "applied")))
+      .orderBy(desc(imports.appliedAt))
+      .limit(1);
+    return { theater, parsed, existing, sameFile };
+  });
+
+  // 2. Decide, with no transaction open: rules, then the agent, then code's checks on the agent.
   const rules = reconcile(parsed.rows, existing);
-  const activeBefore = existing.filter((s) => s.status === "active").length;
-
-  // The agent runs before any write, so the transaction holds no row locks while it thinks.
+  // Everything not already archived can be archived by this import (active and inactive alike).
+  const activeBefore = existing.filter((s) => s.status !== "archived").length;
   const resolved = resolveModel();
   const outcome = resolved
     ? await runReconciliationAgent(resolved, { theater: { name: theater.name, timezone: theater.timezone }, reconciled: rules, existing })
@@ -144,14 +164,19 @@ export async function createImport(
     ? {
         status: outcome.status,
         model: resolved!.label,
-        summary: outcome.summary,
+        summary: summarizeMerge(merged, outcome.status === "ok"),
         error: outcome.error,
         durationMs: outcome.durationMs,
         overrides: merged.overrides,
         corrections: merged.corrections,
         trace: outcome.trace,
+        usage: outcome.usage,
       }
-    : { ...AGENT_OFF, trace: [{ kind: "note", label: "No AI model is configured, so the rules decided", detail: null }] };
+    : {
+        ...AGENT_OFF,
+        summary: summarizeMerge(merged, false),
+        trace: [{ kind: "note", label: "No AI model is configured, so the rules decided", detail: null }],
+      };
 
   const notices = [...parsed.notices];
   // When every dated row is in the past (an old sample, a back-fill), say it once instead of on every row.
@@ -161,19 +186,12 @@ export async function createImport(
     for (const r of merged.rows) r.warnings = r.warnings.filter((w) => w.message !== PAST);
     notices.push("Every showtime in this file is in the past.");
   }
-  const sha = createHash("sha256").update(bytes).digest("hex");
-  const [sameFile] = await tx
-    .select({ appliedAt: imports.appliedAt })
-    .from(imports)
-    .where(and(eq(imports.theaterId, theater.id), eq(imports.fileSha256, sha), eq(imports.status, "applied")))
-    .orderBy(desc(imports.appliedAt))
-    .limit(1);
   if (sameFile?.appliedAt) {
     notices.push(`This exact file was already applied on ${sameFile.appliedAt.toISOString().slice(0, 10)}.`);
   }
-  if (activeBefore > 0 && merged.counts.archive > activeBefore / 2) {
+  if (isLargeArchive(merged.counts.archive, activeBefore)) {
     notices.push(
-      `This drop would archive ${merged.counts.archive} of ${activeBefore} active showtimes. You'll be asked to confirm.`,
+      `This drop would archive ${merged.counts.archive} of ${activeBefore} showtimes in the schedule. You'll be asked to confirm.`,
     );
   }
 
@@ -184,72 +202,76 @@ export async function createImport(
     accepted: true,
   }));
 
-  const [created] = await tx
-    .insert(imports)
-    .values({
-      theaterId: theater.id,
-      uploadedBy: ctx.user.id,
-      filename: input.filename,
-      fileSha256: sha,
-      byteSize: bytes.byteLength,
-      baseScheduleVersion: theater.scheduleVersion,
-      totalRows: merged.rows.length,
-      addCount: merged.counts.add,
-      updateCount: merged.counts.update,
-      unchangedCount: merged.counts.unchanged,
-      archiveCount: merged.counts.archive,
-      duplicateCount: merged.counts.duplicate,
-      rejectedCount: merged.counts.rejected,
-      activeBefore,
-      notices,
-      archiveShowtimeIds: archiveProposals.map((a) => a.showtimeId),
-      archiveProposals,
-      agent,
-      expiresAt: new Date(Date.now() + PREVIEW_TTL_MS),
-    })
-    .returning();
+  // 3. Write the preview.
+  return ctx.withTx(async (tx) => {
+    const txCtx: AuthedContext = { ...ctx, tx };
+    const [created] = await tx
+      .insert(imports)
+      .values({
+        theaterId: theater.id,
+        uploadedBy: ctx.user.id,
+        filename: input.filename,
+        fileSha256: sha,
+        byteSize: bytes.byteLength,
+        baseScheduleVersion: theater.scheduleVersion,
+        totalRows: merged.rows.length,
+        addCount: merged.counts.add,
+        updateCount: merged.counts.update,
+        unchangedCount: merged.counts.unchanged,
+        archiveCount: merged.counts.archive,
+        duplicateCount: merged.counts.duplicate,
+        rejectedCount: merged.counts.rejected,
+        activeBefore,
+        notices,
+        archiveShowtimeIds: archiveProposals.map((a) => a.showtimeId),
+        archiveProposals,
+        agent,
+        expiresAt: new Date(Date.now() + PREVIEW_TTL_MS),
+      })
+      .returning();
 
-  for (const part of chunks(merged.rows)) {
-    await tx.insert(importRows).values(
-      part.map((r) => ({
-        importId: created!.id,
-        lineNumber: r.lineNumber,
-        raw: r.raw,
-        normalized: normalizedOf(r),
-        outcome: r.outcome,
-        showtimeId: r.showtimeId,
-        matchMethod: r.matchMethod,
-        diffs: r.diffs,
-        errors: r.errors,
-        warnings: r.warnings,
-        explanation: r.explanation,
-        confidence: r.confidence,
-        decisionSource: r.decisionSource,
-        aiOverrodeRules: r.aiOverrodeRules,
-        duplicateOf: r.duplicateOf,
-        accepted: true,
-      })),
-    );
-  }
-  await audit(ctx, {
-    action: "import.preview",
-    entityType: "import",
-    entityId: created!.id,
-    theaterId: theater.id,
-    after: {
-      filename: input.filename,
-      ...merged.counts,
-      agent: agent.status,
-      model: agent.model,
-      overrides: agent.overrides,
-      corrections: agent.corrections,
-    },
+    for (const part of chunks(merged.rows)) {
+      await tx.insert(importRows).values(
+        part.map((r) => ({
+          importId: created!.id,
+          lineNumber: r.lineNumber,
+          raw: r.raw,
+          normalized: normalizedOf(r),
+          outcome: r.outcome,
+          showtimeId: r.showtimeId,
+          matchMethod: r.matchMethod,
+          diffs: r.diffs,
+          errors: r.errors,
+          warnings: r.warnings,
+          explanation: r.explanation,
+          confidence: r.confidence,
+          decisionSource: r.decisionSource,
+          aiOverrodeRules: r.aiOverrodeRules,
+          duplicateOf: r.duplicateOf,
+          accepted: true,
+        })),
+      );
+    }
+    await audit(txCtx, {
+      action: "import.preview",
+      entityType: "import",
+      entityId: created!.id,
+      theaterId: theater.id,
+      after: {
+        filename: input.filename,
+        ...merged.counts,
+        agent: agent.status,
+        model: agent.model,
+        overrides: agent.overrides,
+        corrections: agent.corrections,
+      },
+    });
+    return getImportDetail(txCtx, created!.id);
   });
-  return getImportDetail(ctx, created!.id);
 }
 
-async function loadImport(tx: Tx, id: string) {
-  const [row] = await tx
+async function loadImport(ctx: AuthedContext, id: string) {
+  const [row] = await ctx.tx
     .select({ i: imports, theaterName: theaters.name, scheduleVersion: theaters.scheduleVersion, uploader: users.name })
     .from(imports)
     .innerJoin(theaters, eq(theaters.id, imports.theaterId))
@@ -257,6 +279,8 @@ async function loadImport(tx: Tx, id: string) {
     .where(eq(imports.id, id));
   // RLS returns nothing for non-admins, so "not yours" and "doesn't exist" look the same.
   if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "Import not found" });
+  // Checked in code too, so an archived theater's imports are closed even where RLS alone would allow them.
+  requireTheater(ctx, row.i.theaterId, "import.manage");
   return row;
 }
 
@@ -288,7 +312,7 @@ function summaryOf(row: Awaited<ReturnType<typeof loadImport>>): ImportSummary {
 }
 
 export async function getImportDetail(ctx: AuthedContext, id: string): Promise<ImportDetail> {
-  const row = await loadImport(ctx.tx, id);
+  const row = await loadImport(ctx, id);
   const rows = await ctx.tx
     .select()
     .from(importRows)
@@ -329,6 +353,7 @@ export async function getImportDetail(ctx: AuthedContext, id: string): Promise<I
       duplicateOf: r.duplicateOf,
       accepted: r.accepted,
       movieTitle: r.normalized?.movieTitle ?? null,
+      partnerTitle: (r.normalized as StoredNormalized | null)?.partnerTitle ?? null,
       auditorium: r.normalized?.auditorium ?? null,
       startTime: r.normalized?.startTime ?? null,
       endTime: r.normalized?.endTime ?? null,
@@ -366,11 +391,19 @@ export async function listImports(ctx: AuthedContext, theaterId: string): Promis
 }
 
 export async function discardImport(ctx: AuthedContext, id: string) {
-  const row = await loadImport(ctx.tx, id);
+  const row = await loadImport(ctx, id);
   if (row.i.status !== "previewed") {
     throw new TRPCError({ code: "BAD_REQUEST", message: `This import is already ${row.i.status}` });
   }
-  await ctx.tx.update(imports).set({ status: "discarded" }).where(eq(imports.id, id));
+  // Conditional on the status, so a discard racing an apply can't overwrite an applied import.
+  const discarded = await ctx.tx
+    .update(imports)
+    .set({ status: "discarded" })
+    .where(and(eq(imports.id, id), eq(imports.status, "previewed")))
+    .returning({ id: imports.id });
+  if (discarded.length === 0) {
+    throw new TRPCError({ code: "CONFLICT", message: "This import was applied or discarded in the meantime. Nothing was changed." });
+  }
   await audit(ctx, { action: "import.discard", entityType: "import", entityId: id, theaterId: row.i.theaterId });
   return getImportDetail(ctx, id);
 }
@@ -399,11 +432,11 @@ export async function applyImport(
   decisions: { rows: { lineNumber: number; accepted: boolean }[]; archives: { showtimeId: string; accepted: boolean }[] },
 ) {
   const { tx } = ctx;
-  const first = await loadImport(tx, id);
+  const first = await loadImport(ctx, id);
   const theaterId = first.i.theaterId;
   // One apply per theater at a time. Released when the transaction ends.
   await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${"import:" + theaterId}))`);
-  const row = await loadImport(tx, id);
+  const row = await loadImport(ctx, id);
   const imp = row.i;
   const [theater] = await tx.select({ timezone: theaters.timezone }).from(theaters).where(eq(theaters.id, theaterId));
   const timezone = theater?.timezone ?? "UTC";
@@ -445,10 +478,10 @@ export async function applyImport(
   const acceptedArchives = proposals.filter((p) => p.accepted).map((p) => p.showtimeId);
   const rejectedLineSet = new Set(rejectLines);
 
-  if (imp.activeBefore > 0 && acceptedArchives.length > imp.activeBefore / 2 && !confirmLargeArchive) {
+  if (isLargeArchive(acceptedArchives.length, imp.activeBefore) && !confirmLargeArchive) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
-      message: `This archives ${acceptedArchives.length} of ${imp.activeBefore} active showtimes. Confirm to continue.`,
+      message: `This archives ${acceptedArchives.length} of ${imp.activeBefore} showtimes in the schedule. Confirm to continue.`,
     });
   }
 

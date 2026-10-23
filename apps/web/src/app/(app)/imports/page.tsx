@@ -56,6 +56,8 @@ export default function ImportsPage() {
         </div>
       ) : list.error ? (
         <p className="mt-8 text-[13px] text-remove">{errorMessage(list.error)}</p>
+      ) : list.isPending ? (
+        <p className="mt-8 text-[13px] text-ink-3">Loading…</p>
       ) : list.data?.length === 0 ? (
         <div className="mt-12 text-center">
           <p className="font-medium">No imports yet</p>

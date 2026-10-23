@@ -1,53 +1,25 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
 # dependencies
 node_modules/
-/.pnp
-.pnp.js
 
-# testing
+# build and test output
 /coverage
-
-# database
-/prisma/db.sqlite
-/prisma/db.sqlite-journal
-db.sqlite
-
-# next.js
 .next/
 /out/
-next-env.d.ts
-
-# production
 /build
-
-# misc
-.DS_Store
-*.pem
-
-# debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-
-# local env files
-# do not commit any .env files to git, except for the .env.example file. https://create.t3.gg/en/usage/env-variables#using-environment-variables
-.env
-.env*.local
-
-# vercel
-.vercel
-
-# typescript
+next-env.d.ts
 *.tsbuildinfo
 
-# idea files
-.idea
-# local tooling
-.claude/
+# env files: never commit secrets (examples are fine)
 .env*
 !.env.example
 
-# design-tool scratch (comps, captures, decision logs); DESIGN.md and PRODUCT.md are kept
+# tooling
+.vercel
+.claude/
+.idea
+.DS_Store
+*.pem
+*.log
+
+# design-tool scratch (comps, captures, design notes)
 apps/web/.impeccable/

@@ -2,7 +2,7 @@
 
 export const button = {
   primary:
-    "inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-md bg-ink whitespace-nowrap px-4 text-[13px] font-medium text-white transition-colors duration-150 hover:bg-[#2a2a2c] disabled:cursor-not-allowed disabled:bg-[#b9b9bb]",
+    "inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-md bg-ink whitespace-nowrap px-4 text-[13px] font-medium text-white transition-colors duration-150 hover:bg-ink-hover disabled:cursor-not-allowed disabled:bg-ink-disabled",
   secondary:
     "inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-md border border-line-strong whitespace-nowrap bg-white px-3.5 text-[13px] font-medium text-ink transition-colors duration-150 hover:bg-wash disabled:cursor-not-allowed disabled:opacity-50",
   quiet:
@@ -11,13 +11,13 @@ export const button = {
 };
 
 export const field =
-  "h-9 w-full rounded-md border border-line-strong bg-white px-3 text-[13px] text-ink placeholder:text-ink-3 transition-colors duration-150 hover:border-[#c8c8c8] focus:border-ink focus:outline-none disabled:opacity-50";
+  "h-9 w-full rounded-md border border-line-strong bg-white px-3 text-[13px] text-ink placeholder:text-ink-3 transition-colors duration-150 hover:border-field-hover focus:border-ink focus:outline-none disabled:opacity-50";
 
 export const selectField = `${field} appearance-none bg-[length:12px] bg-[right_10px_center] bg-no-repeat pr-8 bg-[url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%238b8f96' stroke-width='1.5'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E")]`;
 
 /** Borderless select used inside table rows. */
 export const inlineSelect =
-  "-ml-1.5 h-7 cursor-pointer appearance-none rounded-md bg-transparent px-1.5 pr-5 text-[13px] text-ink transition-colors hover:bg-wash focus:bg-wash focus:outline-none disabled:cursor-wait bg-[length:10px] bg-[right_4px_center] bg-no-repeat bg-[url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%238b8f96' stroke-width='1.5'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E\")]";
+  "-ml-1.5 h-7 cursor-pointer appearance-none rounded-md bg-transparent px-1.5 pr-5 text-[13px] text-ink transition-colors hover:bg-wash focus:bg-wash focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-focus focus-visible:outline-solid disabled:cursor-wait bg-[length:10px] bg-[right_4px_center] bg-no-repeat bg-[url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%238b8f96' stroke-width='1.5'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E\")]";
 
 export const page = "mx-auto w-full px-5 sm:px-8";
 /** The one reading column every focused page uses (the showtimes table runs wider). */
@@ -31,6 +31,12 @@ export function formatTime(iso: string, timeZone?: string) {
 
 export function formatDay(iso: string, timeZone?: string) {
   return new Date(iso).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone });
+}
+
+/** "Thu 7:30 PM": a showtime within the week of a drop. */
+export function formatWeekdayTime(iso: string, timeZone?: string) {
+  const day = new Date(iso).toLocaleDateString("en-US", { weekday: "short", timeZone });
+  return `${day} ${formatTime(iso, timeZone)}`;
 }
 
 export function formatDateTime(iso: string, timeZone?: string) {

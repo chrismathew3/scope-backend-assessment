@@ -13,13 +13,19 @@
   --color-line: #ececec;
   --color-line-strong: #dcdcdc;
   --color-wash: #f6f6f6;
+  --color-wash-soft: #fafafa; /* row hover, an opened review row */
   --color-ground: #ffffff;
 
+  --color-ink-hover: #2a2a2c;
+  --color-ink-disabled: #b9b9bb;
+  --color-field-hover: #c8c8c8;
+  --color-checkbox-stroke: #c4c4c4;
+  --color-scrollbar: #d6d6d6;
+
   --color-risk: #a8640a; /* amber, 4.6:1 */
-  --color-risk-wash: #fdf6ea;
   --color-remove: #c0322b; /* red, 5.3:1 */
-  --color-add: #1b7a43; /* green, 5.2:1 */
   --color-focus: #2f5bd8;
+  --color-selection: #dfe6fb;
 
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -37,7 +43,7 @@
     color: var(--color-ink);
   }
   ::selection {
-    background: #dfe6fb;
+    background: var(--color-selection);
     color: var(--color-ink);
   }
   :focus-visible {
@@ -58,16 +64,16 @@
     flex: none;
     width: 16px;
     height: 16px;
-    border: 1.5px solid #c4c4c4;
+    border: 1.5px solid var(--color-checkbox-stroke);
     border-radius: 4px;
-    background: #fff center / 11px 11px no-repeat;
+    background: var(--color-ground) center / 11px 11px no-repeat;
     cursor: pointer;
     transition:
       background-color 120ms ease-out,
       border-color 120ms ease-out;
   }
   input[type="checkbox"]:hover:not(:disabled) {
-    border-color: #8b8f96;
+    border-color: var(--color-ink-3);
   }
   input[type="checkbox"]:checked {
     background-color: var(--color-ink);
@@ -87,7 +93,7 @@
   }
   * {
     scrollbar-width: thin;
-    scrollbar-color: #d6d6d6 transparent;
+    scrollbar-color: var(--color-scrollbar) transparent;
   }
   @media (prefers-reduced-motion: reduce) {
     *,
@@ -127,12 +133,40 @@
   }
 }
 
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 @layer utilities {
   .sheet-in {
     animation: sheet-in 220ms var(--ease-out-expo) both;
   }
   .scrim-in {
     animation: scrim-in 160ms ease-out both;
+  }
+  .toast-in {
+    animation: toast-in 220ms var(--ease-out-expo);
+  }
+  .menu-in {
+    animation: menu-in 160ms var(--ease-out-expo);
   }
   .settle {
     animation: settle 420ms var(--ease-out-expo) both;

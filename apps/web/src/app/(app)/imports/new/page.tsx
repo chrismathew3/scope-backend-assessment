@@ -1,7 +1,7 @@
 "use client";
 
 import { MAX_CSV_BYTES } from "@scope/shared";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Upload } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
@@ -17,12 +17,16 @@ const SAMPLES: Record<string, { file: string; about: string }[]> = {
     { file: "tricky-drop.csv", about: "Typos, a moved showtime, a restored film, a row for the wrong theater" },
   ],
   "theater-riverside": [
-    { file: "riverside-drop.csv", about: "A renamed auditorium, a title typo, a new film, a duplicate, one showtime dropped" },
+    {
+      file: "riverside-drop.csv",
+      about: "A renamed auditorium, a title typo, a new film, a duplicate, one showtime dropped",
+    },
   ],
-  "theater-uptown": [
-    { file: "uptown-drop.csv", about: "A moved showtime, restyled titles, a new film listed twice" },
-  ],
+  "theater-uptown": [{ file: "uptown-drop.csv", about: "A moved showtime, restyled titles, a new film listed twice" }],
 };
+
+const MAX_SIZE = `${MAX_CSV_BYTES / (1024 * 1024)} MB`;
+const TOO_BIG = `Files must be ${MAX_SIZE} or smaller (about 30,000 rows).`;
 
 function toBase64(buffer: ArrayBuffer) {
   const bytes = new Uint8Array(buffer);
@@ -34,6 +38,7 @@ function toBase64(buffer: ArrayBuffer) {
 export default function NewImportPage() {
   const trpc = useTRPC();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { me, theaters, setTheaterId, selected } = useShell();
   const input = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
@@ -47,7 +52,12 @@ export default function NewImportPage() {
 
   const create = useMutation(
     trpc.imports.create.mutationOptions({
-      onSuccess: (detail) => router.push(`/imports/${detail.summary.id}`),
+      onSuccess: (detail) => {
+        // The review page opens on the detail we already have.
+        queryClient.setQueryData(trpc.imports.get.queryKey({ id: detail.summary.id }), detail);
+        void queryClient.invalidateQueries({ queryKey: trpc.imports.list.pathKey() });
+        router.push(`/imports/${detail.summary.id}`);
+      },
     }),
   );
 
@@ -63,7 +73,7 @@ export default function NewImportPage() {
   const send = (name: string, buffer: ArrayBuffer) => {
     setFileName(name);
     if (buffer.byteLength === 0) return setLocalError("That file is empty.");
-    if (buffer.byteLength > MAX_CSV_BYTES) return setLocalError("Files must be 3 MB or smaller (about 30,000 rows).");
+    if (buffer.byteLength > MAX_CSV_BYTES) return setLocalError(TOO_BIG);
 
     // No theater chosen yet: take it from the file's theater column. The server still checks every row.
     let target = canImportHere ? selected : undefined;
@@ -89,6 +99,10 @@ export default function NewImportPage() {
 
   const onFile = async (file: File | undefined) => {
     if (!file) return;
+    if (file.size > MAX_CSV_BYTES) {
+      setFileName(file.name);
+      return setLocalError(TOO_BIG);
+    }
     send(file.name, await file.arrayBuffer());
   };
 
@@ -187,13 +201,13 @@ export default function NewImportPage() {
               void onFile(e.dataTransfer.files[0]);
             }}
             className={`${target ? "mt-10" : "mt-6"} flex w-full flex-col items-center justify-center rounded-xl border border-dashed px-6 py-14 text-center transition-colors duration-150 ${
-              dragging ? "border-ink bg-wash" : "border-line-strong hover:border-ink-3 hover:bg-[#fcfcfc]"
+              dragging ? "border-ink bg-wash" : "border-line-strong hover:border-ink-3 hover:bg-wash-soft"
             }`}
           >
             <Upload aria-hidden className="size-5 text-ink-2" />
             <span className="mt-3 font-medium">Drop a CSV here, or choose a file</span>
             <span className="mt-1 text-[13px] text-ink-2">
-              Columns like theater, title, auditorium, start and end time. Up to 3 MB.
+              Columns like theater, title, auditorium, start and end time. Up to {MAX_SIZE}.
             </span>
           </button>
           {error && (

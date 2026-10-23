@@ -64,6 +64,20 @@
       "when": 1792711739177,
       "tag": "0008_demo_reset_audit",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792715959818,
+      "tag": "0009_review_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1792717247288,
+      "tag": "0010_login_failures",
+      "breakpoints": true
     }
   ]
 }

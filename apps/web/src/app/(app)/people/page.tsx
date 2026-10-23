@@ -6,9 +6,7 @@ import { X } from "lucide-react";
 import { useState } from "react";
 import { errorMessage, useTRPC } from "~/lib/trpc";
 import { button, column, field, h1, inlineSelect, selectField } from "~/lib/ui";
-import { principalOf, type TheaterOption, useShell } from "../../_components/AppShell";
-
-type Me = ReturnType<typeof useShell>["me"];
+import { type Me, principalOf, type TheaterOption, useShell } from "../../_components/AppShell";
 
 /** Roles the caller may grant in a theater: super admins any, theater admins viewer only. */
 function grantableRoles(me: Me, theaterId: string): TheaterRole[] {
@@ -28,16 +26,38 @@ export default function PeoplePage() {
 
   const users = useQuery(trpc.users.list.queryOptions({ theaterId: theaterFilter || undefined }));
   const manageable = theaters.filter((t) => grantableRoles(me, t.id).length > 0);
+  // The server lists people only for theaters where you can read members.
+  const readable = theaters.filter((t) => can(principalOf(me), "member.read", t.id));
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: trpc.users.pathKey() });
+  const usersKey = trpc.users.pathKey();
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: usersKey });
   const onError = (e: unknown) => notify(errorMessage(e), "error");
   const done = (text: string) => () => {
     notify(text);
     void invalidate();
   };
 
+  // Role changes show at once; a failure refetches the real state.
   const setMembership = useMutation(
-    trpc.memberships.set.mutationOptions({ onSuccess: done("Access updated."), onError }),
+    trpc.memberships.set.mutationOptions({
+      onMutate: async ({ userId, theaterId, role }) => {
+        await queryClient.cancelQueries({ queryKey: usersKey });
+        const theaterName = theaters.find((t) => t.id === theaterId)?.name ?? "";
+        queryClient.setQueriesData<UserView[]>({ queryKey: trpc.users.list.pathKey() }, (list) =>
+          list?.map((u) => {
+            if (u.id !== userId) return u;
+            const has = u.memberships.some((m) => m.theaterId === theaterId);
+            const memberships = has
+              ? u.memberships.map((m) => (m.theaterId === theaterId ? { ...m, role } : m))
+              : [...u.memberships, { theaterId, theaterName, role }];
+            return { ...u, memberships };
+          }),
+        );
+      },
+      onSuccess: () => notify("Access updated."),
+      onError,
+      onSettled: () => invalidate(),
+    }),
   );
   const removeMembership = useMutation(
     trpc.memberships.remove.mutationOptions({ onSuccess: done("Removed from theater."), onError }),
@@ -118,7 +138,7 @@ export default function PeoplePage() {
           className={`${selectField} !w-48 shrink-0`}
         >
           <option value="">{me.isSuperAdmin ? "Everyone" : "All my theaters"}</option>
-          {theaters.map((t) => (
+          {readable.map((t) => (
             <option key={t.id} value={t.id}>
               {t.name}
             </option>
@@ -126,6 +146,7 @@ export default function PeoplePage() {
         </select>
       </div>
       {users.error && <p className="mt-4 text-[13px] text-remove">{errorMessage(users.error)}</p>}
+      {users.isPending && <p className="mt-4 text-[13px] text-ink-3">Loading…</p>}
 
       <ul className="mt-3 border-t border-line">
         {(users.data ?? []).map((u) => (
@@ -325,9 +346,12 @@ function CreateUser({
       className="mt-8 border-t border-line pt-6"
       onSubmit={(e) => {
         e.preventDefault();
-        const memberships = Object.entries(roles)
-          .filter((entry): entry is [string, TheaterRole] => entry[1] !== "")
-          .map(([theaterId, role]) => ({ theaterId, role }));
+        // A super admin is admin everywhere, so the hidden per-theater picks don't apply.
+        const memberships = isSuperAdmin
+          ? []
+          : Object.entries(roles)
+              .filter((entry): entry is [string, TheaterRole] => entry[1] !== "")
+              .map(([theaterId, role]) => ({ theaterId, role }));
         const parsed = UserCreateInput.safeParse({ name, email, isSuperAdmin, memberships });
         if (!parsed.success) return setFormError(parsed.error.issues[0]?.message ?? "Check the form");
         if (!me.isSuperAdmin && memberships.length === 0) return setFormError("Choose at least one theater.");

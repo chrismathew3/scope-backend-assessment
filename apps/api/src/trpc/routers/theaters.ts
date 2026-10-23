@@ -4,7 +4,7 @@ import { eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { theaters } from "../../db/schema";
 import { audit } from "../../services/audit";
-import { authedProcedure, isUniqueViolation, requireGlobal, router, superAdminProcedure } from "../init";
+import { authedProcedure, isUniqueViolation, router, superAdminProcedure } from "../init";
 
 const tags = ["theaters"];
 
@@ -42,7 +42,6 @@ export const theatersRouter = router({
     .input(TheaterCreateInput)
     .output(Theater)
     .mutation(async ({ ctx, input }) => {
-      requireGlobal(ctx, "theater.manage");
       try {
         const [t] = await ctx.tx.insert(theaters).values(input).returning();
         await audit(ctx, { action: "theater.create", entityType: "theater", entityId: t!.id, theaterId: t!.id, after: input });
@@ -76,12 +75,10 @@ export const theatersRouter = router({
     .input(IdInput)
     .output(z.object({ ok: z.literal(true) }))
     .mutation(async ({ ctx, input }) => {
-      const [t] = await ctx.tx
-        .update(theaters)
-        .set({ archivedAt: new Date() })
-        .where(eq(theaters.id, input.id))
-        .returning({ id: theaters.id });
+      const [t] = await ctx.tx.select({ archivedAt: theaters.archivedAt }).from(theaters).where(eq(theaters.id, input.id));
       if (!t) throw new TRPCError({ code: "NOT_FOUND", message: "Theater not found" });
+      if (t.archivedAt) return { ok: true as const }; // already archived: nothing to record
+      await ctx.tx.update(theaters).set({ archivedAt: new Date() }).where(eq(theaters.id, input.id));
       await audit(ctx, { action: "theater.archive", entityType: "theater", entityId: input.id, theaterId: input.id });
       return { ok: true as const };
     }),

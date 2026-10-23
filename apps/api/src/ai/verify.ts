@@ -6,8 +6,10 @@
  * against the real schedule; anything invalid falls back to the rules' answer
  * and counts as a correction. Diffs are always computed here, never by the model.
  */
-import { digitTokens, titleKey, trigramSimilarity } from "../csv/normalize";
-import { headerToColumn } from "../csv/parse";
+import { computeDiffs, FUZZY_THRESHOLD, sameNumbers, sameShowtime, titlesConflict } from "../csv/match";
+import { titleKey, trigramSimilarity } from "../csv/normalize";
+import { columnCell } from "../csv/parse";
+import { parseTimestamp } from "../csv/time";
 import type { CleanRow, ExistingShowtime, FieldDiff, ReconciledRow, ReconcileResult, RowOutcome } from "../csv/types";
 
 export type AgentAction = "add" | "update" | "unchanged" | "duplicate" | "skip";
@@ -22,9 +24,7 @@ export interface AgentRowDecision {
 }
 
 export interface AgentReview {
-  summary: string;
   rows: AgentRowDecision[];
-  missing: { showtimeId: string; explanation: string }[];
   /** Lines the agent was asked to decide (and finished). Others are the rules' to decide, not corrections. */
   delegated?: number[];
 }
@@ -60,42 +60,23 @@ export interface MergeResult {
 
 /** A showtime can move by at most this much and still count as the same showtime. */
 export const MAX_MOVE_MS = 3 * 60 * 60 * 1000;
-/** Below this title similarity, a same-time match is implausible (different film). */
-const MIN_SAME_TIME_SIMILARITY = 0.25;
-const FUZZY_THRESHOLD = 0.6;
-
-const COMPARED_FIELDS = ["movieTitle", "auditorium", "endTime", "language", "format", "rating"] as const;
-type ComparedField = (typeof COMPARED_FIELDS)[number];
-
-const iso = (v: string | Date) => (v instanceof Date ? v.toISOString() : v);
-
-const keyOf = (titleKey: string, start: Date) => `${titleKey}|${start.getTime()}`;
-
-export function computeDiffs(existing: ExistingShowtime, row: CleanRow): FieldDiff[] {
-  const diffs: FieldDiff[] = [];
-  if (existing.status === "archived") diffs.push({ field: "status", oldValue: "archived", newValue: "active" });
-  if (existing.startTime.getTime() !== row.startTime.getTime()) {
-    diffs.push({ field: "startTime", oldValue: existing.startTime.toISOString(), newValue: row.startTime.toISOString() });
-  }
-  for (const field of COMPARED_FIELDS) {
-    const oldValue = iso(existing[field] as string | Date);
-    const newValue = iso(row[field] as string | Date);
-    if (oldValue !== newValue) diffs.push({ field, oldValue, newValue });
-  }
-  return diffs;
-}
+/**
+ * The agent may match a same-start title a little below the rules' threshold
+ * (abbreviations like "Dune Pt. II" for "Dune: Part Two" score 0.57), never an unrelated one.
+ */
+const AI_MIN_SIMILARITY = 0.5;
 
 /** Can this file row plausibly be that existing showtime? Code's veto over the model. */
 export function plausibleMatch(row: CleanRow, s: ExistingShowtime): { ok: true; method: FinalMatchMethod } | { ok: false; reason: string } {
-  // Sequels never match: "Kung Fu Panda 4" is not "Kung Fu Panda 3".
-  if (digitTokens(row.movieTitleKey).join(" ") !== digitTokens(s.movieTitleKey).join(" ")) {
-    return { ok: false, reason: "different sequel or number in the title" };
-  }
   const sameKey = row.movieTitleKey === s.movieTitleKey;
+  // Sequels never match: "Kung Fu Panda 4" is not "Kung Fu Panda 3".
+  if (!sameKey && !sameNumbers(row.movieTitleKey, s.movieTitleKey)) return { ok: false, reason: "different sequel or number in the title" };
+  // "Across the Spider-Verse" is not "Into the Spider-Verse".
+  if (!sameKey && titlesConflict(row.movieTitleKey, s.movieTitleKey)) return { ok: false, reason: "the titles name different films" };
   const similarity = trigramSimilarity(row.movieTitleKey, s.movieTitleKey);
   const delta = Math.abs(row.startTime.getTime() - s.startTime.getTime());
   if (delta === 0) {
-    if (!sameKey && similarity < MIN_SAME_TIME_SIMILARITY) return { ok: false, reason: "titles are too different" };
+    if (!sameKey && similarity < AI_MIN_SIMILARITY) return { ok: false, reason: "titles are too different" };
     if (s.status === "archived") return { ok: true, method: "reactivated" };
     return { ok: true, method: sameKey ? "exact_key" : similarity >= FUZZY_THRESHOLD ? "fuzzy_title" : "ai_match" };
   }
@@ -107,27 +88,6 @@ export function plausibleMatch(row: CleanRow, s: ExistingShowtime): { ok: true; 
 
 function formatLocal(d: Date, timezone: string) {
   return d.toLocaleString("en-US", { timeZone: timezone, month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-}
-
-const fieldNames: Record<string, string> = {
-  movieTitle: "title",
-  auditorium: "auditorium",
-  endTime: "end time",
-  startTime: "start time",
-  language: "language",
-  format: "format",
-  rating: "rating",
-  status: "status",
-};
-
-export function describeDiffs(diffs: FieldDiff[], timezone: string): string {
-  const parts = diffs
-    .filter((d) => d.field !== "status")
-    .map((d) => {
-      const show = (v: string) => (d.field.endsWith("Time") ? formatLocal(new Date(v), timezone) : `"${v}"`);
-      return `${fieldNames[d.field] ?? d.field} from ${show(d.oldValue)} to ${show(d.newValue)}`;
-    });
-  return parts.length ? `Changes: ${parts.join("; ")}.` : "";
 }
 
 /** Plain-language reason when the rules made the call. */
@@ -193,352 +153,355 @@ export function rejectionReason(errors: { column: string; message: string }[]): 
   return `Not imported: ${text}.`;
 }
 
-const MISSING_RULES_TEXT = "Not in this drop. Showtimes missing from a new drop are archived.";
+const MISSING_TEXT = "Not in this drop. Showtimes missing from a new drop are archived.";
 
-/** Same film and start as sent: equal keys, or the same start with a near-identical title and the same numbers. */
-function sameShowtime(a: CleanRow | null, b: CleanRow | null): boolean {
-  if (!a || !b || a.startTime.getTime() !== b.startTime.getTime()) return false;
-  if (a.movieTitleKey === b.movieTitleKey) return true;
-  return (
-    trigramSimilarity(a.movieTitleKey, b.movieTitleKey) >= FUZZY_THRESHOLD &&
-    digitTokens(a.movieTitleKey).join(" ") === digitTokens(b.movieTitleKey).join(" ")
-  );
+/** Text that gives orders came from the data, not from judgement. */
+const INSTRUCTION_LIKE = /\b(ignore|disregard|instruct\w*|system prompt|override|as requested|you (must|should))\b/i;
+/** Claims the drop wrote the title or auditorium exactly as stored. */
+const CLAIMS_EXACT = /\b(identical|exact(ly)?|verbatim|word[- ]for[- ]word|same (title|name|spelling|wording))\b/i;
+const MAX_REASON = 200;
+
+/**
+ * The agent's reason is shown as written only if it passes simple checks: not empty,
+ * short, no instruction-like text, and no "identical"/"exact" claim when the drop's
+ * raw title or auditorium differs from what's stored. Otherwise code writes the reason.
+ */
+export function acceptableReason(text: string, sent: CleanRow | null, stored: ExistingShowtime | undefined): boolean {
+  const t = text.trim();
+  if (!t || t.length > MAX_REASON || INSTRUCTION_LIKE.test(t)) return false;
+  const textDiffers = !!sent && !!stored && (sent.movieTitle !== stored.movieTitle || sent.auditorium !== stored.auditorium);
+  if (textDiffers && CLAIMS_EXACT.test(t)) return false;
+  // The screen already shows the change and the drop's spelling; a reason that repeats them adds nothing.
+  const repeats = (raw: string | undefined, kept: string | undefined) => !!raw && raw !== kept && t.includes(raw);
+  if (repeats(sent?.movieTitle, stored?.movieTitle) || repeats(sent?.auditorium, stored?.auditorium)) return false;
+  return !RESTATES_CHANGE.test(t);
 }
 
-/** Text that talks about instructions or operators came from the data, not from judgement. */
-const SUSPICIOUS = /\b(instruct\w*|operator|override|as requested|ignore (all|previous)|system prompt)\b/i;
+/** "moved from 10:30 AM to 10:45 AM", "from Aud 1 to Aud. 1": the change, not a reason. */
+const RESTATES_CHANGE = /\bfrom\b[^.]*\bto\b/i;
 
-/** Abbreviations common in showtime data that end in a period but don't end a sentence. */
-const ABBREVIATION = /\b(aud|pt|no|st|vol|ch|ep|vs|mr|mrs|ms|dr|jr|sr|approx|e\.g|i\.e)\.$/i;
+/** Was this line the agent's to decide? (Every line, when the review doesn't say.) */
+const ownedBy = (review: AgentReview | null, row: FinalRow) => !!review && (!review.delegated || review.delegated.includes(row.lineNumber));
 
-/** Splits text into sentences without breaking on "Aud. A" or "Pt. II". */
-export function splitSentences(text: string): string[] {
-  const out: string[] = [];
-  for (const piece of text.trim().split(/(?<=[.!?])\s+/)) {
-    const prev = out[out.length - 1];
-    if (prev !== undefined && ABBREVIATION.test(prev)) out[out.length - 1] = `${prev} ${piece}`;
-    else out.push(piece);
+/** Shared state for the merge steps below. */
+interface MergeState {
+  det: ReconcileResult;
+  rows: FinalRow[];
+  existing: ExistingShowtime[];
+  existingById: Map<string, ExistingShowtime>;
+  byLine: Map<number, AgentRowDecision>;
+  claimed: Set<string>;
+  /** Rows already decided by an earlier step. */
+  settled: Set<FinalRow>;
+  /** Matched rows whose title key differs from the stored one: shown for review, never a silent "unchanged". */
+  titleKeyDiffers: Set<FinalRow>;
+  corrections: number;
+}
+
+function setMatch(st: MergeState, row: FinalRow, s: ExistingShowtime, method: FinalMatchMethod) {
+  st.claimed.add(s.id);
+  row.showtimeId = s.id;
+  row.matchMethod = method;
+  row.duplicateOf = null;
+  const keyDiffers = row.value!.movieTitleKey !== s.movieTitleKey;
+  if (keyDiffers) st.titleKeyDiffers.add(row);
+  else st.titleKeyDiffers.delete(row);
+  // A match means "same showtime", so the stored title wins: a partner's
+  // spelling ("Spiderman Homecomming") must never overwrite the schedule's.
+  if (row.value!.movieTitle !== s.movieTitle) {
+    row.partnerTitle = row.value!.movieTitle;
+    row.value = { ...row.value!, movieTitle: s.movieTitle, movieTitleKey: s.movieTitleKey };
   }
-  return out.filter(Boolean);
+  row.diffs = computeDiffs(s, row.value!);
+  row.outcome = row.diffs.length > 0 || keyDiffers ? "update" : "unchanged";
+}
+
+function fromAgent(row: FinalRow, d: AgentRowDecision) {
+  row.decisionSource = "ai";
+  row.confidence = d.confidence;
+  row.explanation = d.explanation;
+}
+
+function setDuplicate(row: FinalRow, of: number) {
+  row.outcome = "duplicate";
+  row.showtimeId = null;
+  row.matchMethod = null;
+  row.diffs = [];
+  row.duplicateOf = of;
+}
+
+function setAdd(row: FinalRow) {
+  row.outcome = "add";
+  row.showtimeId = null;
+  row.matchMethod = null;
+  row.diffs = [];
+  row.duplicateOf = null;
+}
+
+/** The rules' answer for a row, adjusted if an earlier verified decision took its showtime. */
+function applyRules(st: MergeState, row: FinalRow, original: ReconciledRow) {
+  row.decisionSource = "rules";
+  row.confidence = null;
+  row.explanation = "";
+  if (!row.value) {
+    row.outcome = "rejected";
+    return;
+  }
+  if (original.outcome === "duplicate" && original.duplicateOf != null) return setDuplicate(row, original.duplicateOf);
+  const s = original.showtimeId ? st.existingById.get(original.showtimeId) : undefined;
+  if (s && !st.claimed.has(s.id)) return setMatch(st, row, s, original.matchMethod ?? "exact_key");
+  setAdd(row);
 }
 
 /**
- * Agent reasons are shown next to a code-computed diff, so drop sentences that
- * restate the change ("from X to Y", which models sometimes get backwards) and
- * anything that echoes instructions found in the data.
+ * Step 1. A rules match with the same title key at the same start is identity, not
+ * judgement: it claims its showtime before any agent match, across the whole file.
  */
-export function cleanExplanation(text: string, row: FinalRow): string {
-  if (!text || SUSPICIOUS.test(text)) return "";
-  if (row.diffs.length === 0) return text.trim();
-  // A leftover fragment like "A." is not a reason; drop pieces under two words.
-  const kept = splitSentences(text).filter((sentence) => !/\bfrom\b.+\bto\b/i.test(sentence) && sentence.split(/\s+/).length >= 2);
-  return kept.join(" ").trim();
+function lockIdentityMatches(st: MergeState, review: AgentReview | null) {
+  st.rows.forEach((row, i) => {
+    const original = st.det.rows[i]!;
+    const s = original.showtimeId ? st.existingById.get(original.showtimeId) : undefined;
+    if (!row.value || !s || s.movieTitleKey !== row.value.movieTitleKey || st.claimed.has(s.id)) return;
+    setMatch(st, row, s, original.matchMethod ?? "exact_key");
+    st.settled.add(row);
+    const d = st.byLine.get(row.lineNumber);
+    if (d && (d.action === "update" || d.action === "unchanged") && d.showtimeId === s.id) fromAgent(row, d);
+    else if (d || ownedBy(review, row)) st.corrections++; // disagreed with an identity match, or skipped a line it owned
+  });
 }
 
-const HEDGE =
-  /\b(despite|although|though|but|typos?|misspel\w*|variants?|variations?|differ\w*|abbreviat\w*|punctuation|formatting|capitali[sz]\w*|spacing|near(ly)?|close(ly)?|similar|minor|apart from|except|spells?|spelled|written|writes)\b/i;
-const STRONG_SAME = /\b(identical|exact(ly)?|verbatim|word[- ]for[- ]word)\b/i;
-const WEAK_SAME = /\b(same|match(es|ed|ing)?)\b/i;
-const TITLE_WORD = /\b(titles?|names?|wording)\b/i;
-const FILM_WORD = /\b(films?|movies?)\b/i;
-const AUDITORIUM_WORD = /\b(aud\w*|screens?|rooms?|halls?|house)\b/i;
-const EVERYTHING_WORD = /\b(all|every|everything)\b/i;
+/** Step 2. Agent matches (update / unchanged), in file order, each checked by plausibleMatch. */
+function acceptAgentMatches(st: MergeState) {
+  for (const row of st.rows) {
+    const d = st.byLine.get(row.lineNumber);
+    if (st.settled.has(row) || !row.value || !d || (d.action !== "update" && d.action !== "unchanged")) continue;
+    const s = d.showtimeId ? st.existingById.get(d.showtimeId) : undefined;
+    const check = s && !st.claimed.has(s.id) ? plausibleMatch(row.value, s) : null;
+    // A loose title match loses to a showtime of exactly this film at this start that nothing matched.
+    const exactTwinFree =
+      check?.ok && check.method !== "exact_key" &&
+      st.existing.some(
+        (x) => x.status !== "archived" && !st.claimed.has(x.id) && x.movieTitleKey === row.value!.movieTitleKey && x.startTime.getTime() === row.value!.startTime.getTime(),
+      );
+    if (s && check?.ok && !exactTwinFree) {
+      setMatch(st, row, s, check.method);
+      fromAgent(row, d);
+      st.settled.add(row);
+    } else {
+      st.corrections++;
+    }
+  }
+}
 
-/** Does this sentence say the title (or auditorium) is written exactly as stored? */
-function claimsSame(sentence: string, field: "title" | "auditorium"): boolean {
-  if (HEDGE.test(sentence)) return false;
-  const strong = STRONG_SAME.test(sentence);
-  if (strong && EVERYTHING_WORD.test(sentence)) return true;
-  // "Same auditorium" holds for "Aud 1" vs "Auditorium 1"; only an exact-text claim is wrong.
-  if (field === "auditorium") return AUDITORIUM_WORD.test(sentence) && strong;
-  // "Same film" is true even when the spelling differs; "same title" or "identical film" is not.
-  if (TITLE_WORD.test(sentence) && (strong || WEAK_SAME.test(sentence))) return true;
-  // "Identical film" claims the title; "same film in an identical auditorium" doesn't.
-  return FILM_WORD.test(sentence) && strong && !AUDITORIUM_WORD.test(sentence);
+/** Step 3. Everything else, in file order: agent adds and duplicates if they hold up, else the rules. */
+function decideRest(st: MergeState, review: AgentReview | null) {
+  st.rows.forEach((row, i) => {
+    if (st.settled.has(row)) return;
+    const original = st.det.rows[i]!;
+    const d = st.byLine.get(row.lineNumber);
+    if (!row.value) {
+      // Parser-rejected rows stay rejected, and code writes their reason from the validation issues.
+      row.outcome = "rejected";
+      if (d && d.action !== "skip") st.corrections++;
+      return;
+    }
+    if (!d) {
+      if (ownedBy(review, row)) st.corrections++; // the agent skipped a line it owned
+      return applyRules(st, row, original);
+    }
+    if (d.action === "duplicate") {
+      const targetIdx = st.rows.findIndex((r) => r.lineNumber === d.duplicateOfLine);
+      const target = st.det.rows[targetIdx];
+      // A duplicate must really repeat an earlier row (same film and start), judged on the rows as sent.
+      // …and the target can't itself be a duplicate (the rules may have kept a later line instead).
+      const targetKept = st.rows[targetIdx]?.outcome !== "duplicate";
+      if (target?.value && targetKept && target.lineNumber < row.lineNumber && sameShowtime(original.value!, target.value)) {
+        setDuplicate(row, target.lineNumber);
+        return fromAgent(row, d);
+      }
+    }
+    if (d.action === "add") {
+      // The agent may not release a showtime the rules matched: that would archive a showtime that is in the drop.
+      const ruleMatch = original.showtimeId && !st.claimed.has(original.showtimeId);
+      if (!ruleMatch) {
+        setAdd(row);
+        return fromAgent(row, d);
+      }
+    }
+    // update/unchanged were already counted in step 2; anything else that got here failed a check.
+    if (d.action !== "update" && d.action !== "unchanged") st.corrections++;
+    applyRules(st, row, original);
+  });
 }
 
 /**
- * The agent sometimes reads a normalized match as an exact one and says the title
- * is "identical" when the drop spells it differently. Sentences that claim an
- * exact title or auditorium the raw text contradicts are replaced with one
- * code-written sentence that says what the drop actually wrote.
+ * Step 4. No add may become a second active copy of a film at the same start: an add
+ * that is the same showtime as a matched row or an earlier add becomes its duplicate,
+ * and one that is the same as a single unmatched live showtime is matched to it.
  */
-export function repairSameClaims(text: string, row: FinalRow, stored: ExistingShowtime | undefined): string {
-  if (!text || !stored || !row.value) return text;
-  const titleDiffers = !!row.partnerTitle && row.partnerTitle !== stored.movieTitle;
-  const audDiffers = row.value.auditorium !== stored.auditorium;
-  if (!titleDiffers && !audDiffers) return text;
-  const sentences = splitSentences(text);
-  const titleBad = titleDiffers && sentences.some((s) => claimsSame(s, "title"));
-  const audBad = audDiffers && sentences.some((s) => claimsSame(s, "auditorium"));
-  if (!titleBad && !audBad) return text;
-  const bad = (s: string) => (titleBad && claimsSame(s, "title")) || (audBad && claimsSame(s, "auditorium"));
-  const sameStart = row.value.startTime.getTime() === stored.startTime.getTime();
-  const notes = [
-    titleBad ? `the drop spells it "${row.partnerTitle}"` : null,
-    audBad ? `${titleBad ? "lists" : "the drop lists"} the auditorium as "${row.value.auditorium}"` : null,
-  ].filter(Boolean);
-  const fix = `Same film${sameStart ? " and start time" : ""} as the stored showtime; ${notes.join(" and ")}.`;
-  const out: string[] = [];
-  for (const s of sentences) {
-    if (!bad(s)) out.push(s);
-    else if (!out.includes(fix)) out.push(fix);
+function resolveAddCollisions(st: MergeState) {
+  // sameShowtime needs an identical start, so bucket by start time: each check looks at a handful of rows, not the file.
+  const at = (d: Date) => d.getTime();
+  const sentOf = new Map(st.rows.map((r, i) => [r, st.det.rows[i]!.value]));
+  const activeAt = new Map<number, FinalRow[]>();
+  const addActive = (r: FinalRow) => {
+    for (const v of [r.value!, sentOf.get(r)]) {
+      if (!v) continue;
+      const list = activeAt.get(at(v.startTime)) ?? [];
+      if (!list.includes(r)) list.push(r);
+      activeAt.set(at(v.startTime), list);
+    }
+  };
+  const liveAt = new Map<number, ExistingShowtime[]>();
+  for (const s of st.existing) {
+    if (s.status === "archived") continue;
+    liveAt.set(at(s.startTime), [...(liveAt.get(at(s.startTime)) ?? []), s]);
   }
-  return out.join(" ").trim();
+  const covers = (owner: FinalRow, row: FinalRow) => {
+    const sent = sentOf.get(owner);
+    return sameShowtime(owner.value!, row.value!) || (!!sent && sameShowtime(sent, row.value!));
+  };
+
+  for (const r of st.rows) if (r.value && (r.outcome === "update" || r.outcome === "unchanged")) addActive(r);
+  for (const row of st.rows) {
+    if (row.outcome !== "add" || !row.value) continue;
+    const wasAgent = row.decisionSource === "ai";
+    const owner = (activeAt.get(at(row.value.startTime)) ?? []).find((a) => a !== row && covers(a, row));
+    if (owner) {
+      setDuplicate(row, owner.lineNumber);
+    } else {
+      const twins = (liveAt.get(at(row.value.startTime)) ?? []).filter(
+        (s) => !st.claimed.has(s.id) && sameShowtime(s, row.value!),
+      );
+      if (twins.length !== 1) {
+        addActive(row);
+        continue;
+      }
+      setMatch(st, row, twins[0]!, twins[0]!.movieTitleKey === row.value.movieTitleKey ? "exact_key" : "fuzzy_title");
+      addActive(row);
+    }
+    if (wasAgent) st.corrections++;
+    row.decisionSource = "rules";
+    row.confidence = null;
+    row.explanation = "";
+  }
 }
 
+/** Step 5. Reasons: the agent's if it passes acceptableReason, else code's. Counts overrides. */
+function writeExplanations(st: MergeState, timezone: string): number {
+  let overrides = 0;
+  st.rows.forEach((row, i) => {
+    const original = st.det.rows[i]!;
+    const stored = row.showtimeId ? st.existingById.get(row.showtimeId) : undefined;
+    if (row.decisionSource === "ai") {
+      row.aiOverrodeRules = row.outcome !== original.outcome || (row.showtimeId ?? null) !== (original.showtimeId ?? null);
+      if (row.aiOverrodeRules) overrides++;
+      // Models sometimes over-escape quotes inside the JSON string (\"Aud 1\").
+      row.explanation = row.explanation.replace(/\\(["'])/g, "$1");
+      if (!acceptableReason(row.explanation, original.value, stored)) row.explanation = "";
+    }
+    row.explanation = row.explanation.trim() || rulesExplanation(row, st.existingById, timezone);
+    // A new showtime of a film the theater already lists takes the stored spelling.
+    if (row.outcome === "add" && row.value) {
+      const known = st.existing.find((s) => s.movieTitleKey === row.value!.movieTitleKey);
+      if (known && known.movieTitle !== row.value.movieTitle) {
+        row.partnerTitle = row.value.movieTitle;
+        row.value = { ...row.value, movieTitle: known.movieTitle };
+      }
+    }
+  });
+  return overrides;
+}
+
+/**
+ * Step 6. A row that failed validation but still names a showtime here (title + start)
+ * protects that showtime: a malformed line is not evidence the showtime was dropped.
+ * Rows for another theater protect nothing.
+ */
+function heldByRejectedRows(st: MergeState, timezone: string): Set<string> {
+  const held = new Set<string>();
+  for (const r of st.rows) {
+    if (r.value || r.errors.some((e) => e.column === "theater_name")) continue;
+    const title = columnCell(r.raw, "movie_title");
+    const start = parseTimestamp(columnCell(r.raw, "start_time") ?? "", timezone);
+    if (!title || !start.ok) continue;
+    const wanted = { movieTitleKey: titleKey(title), startTime: start.date };
+    const hit = st.existing.find((s) => s.status !== "archived" && !st.claimed.has(s.id) && !held.has(s.id) && sameShowtime(s, wanted));
+    if (hit) {
+      held.add(hit.id);
+      r.warnings = [...r.warnings, { column: "*", message: `Refers to ${hit.movieTitle} at this time, which is left as it is.` }];
+    }
+  }
+  return held;
+}
+
+/**
+ * Turns the rules' result and the agent's review into the proposal the reviewer sees.
+ * Order matters: identity matches claim first, then verified agent matches, then
+ * everything else; adds are checked for collisions last.
+ */
 export function mergeAgentReview(
   det: ReconcileResult,
   review: AgentReview | null,
   existing: ExistingShowtime[],
   opts: { timezone: string },
 ): MergeResult {
-  const existingById = new Map(existing.map((s) => [s.id, s]));
   const byLine = new Map<number, AgentRowDecision>();
   for (const d of review?.rows ?? []) if (!byLine.has(d.line)) byLine.set(d.line, d);
-
-  const claimed = new Set<string>();
-  // Keys that will be active after applying (claimed rows + adds), to catch collisions.
-  const activeKeys = new Map<string, number>();
-  let corrections = 0;
-
-  const rows: FinalRow[] = det.rows.map((r) => ({
-    ...r,
-    matchMethod: r.matchMethod,
-    explanation: "",
-    confidence: null,
-    decisionSource: "rules",
-    aiOverrodeRules: false,
-    duplicateOf: null,
-  }));
-  const lineIndex = new Map(rows.map((r, i) => [r.lineNumber, i]));
-
-  // Duplicate-of for rule duplicates: earliest earlier row with the same key.
-  const firstByKey = new Map<string, number>();
-  for (const r of rows) {
-    if (!r.value) continue;
-    const k = keyOf(r.value.movieTitleKey, r.value.startTime);
-    if (!firstByKey.has(k)) firstByKey.set(k, r.lineNumber);
-    else if (r.outcome === "duplicate") r.duplicateOf = firstByKey.get(k)!;
-  }
-
-  const setMatch = (row: FinalRow, s: ExistingShowtime, method: FinalMatchMethod) => {
-    claimed.add(s.id);
-    row.showtimeId = s.id;
-    row.matchMethod = method;
-    // A match means "same showtime", so the stored title wins: a partner's
-    // spelling ("Spiderman Homecomming") must never overwrite the schedule's.
-    if (row.value && row.value.movieTitle !== s.movieTitle) {
-      const partnerTitle = row.value.movieTitle;
-      row.value = { ...row.value, movieTitle: s.movieTitle, movieTitleKey: s.movieTitleKey };
-      if (!row.warnings.some((w) => w.column === "movie_title" && w.message.startsWith("Partner wrote"))) {
-        row.warnings = [...row.warnings, { column: "movie_title", message: `Partner wrote "${partnerTitle}"; keeping "${s.movieTitle}".` }];
-      }
-      row.partnerTitle = partnerTitle;
-    }
-    row.diffs = computeDiffs(s, row.value!);
-    row.outcome = row.diffs.length ? "update" : "unchanged";
-    activeKeys.set(keyOf(row.value!.movieTitleKey, row.value!.startTime), row.lineNumber);
+  const st: MergeState = {
+    det,
+    rows: det.rows.map((r) => ({
+      ...r,
+      explanation: "",
+      confidence: null,
+      decisionSource: "rules",
+      aiOverrodeRules: false,
+    })),
+    existing,
+    existingById: new Map(existing.map((s) => [s.id, s])),
+    byLine,
+    claimed: new Set(),
+    settled: new Set(),
+    titleKeyDiffers: new Set(),
+    corrections: 0,
   };
 
-  /** The rules' answer for a row, adjusted if an earlier verified decision took its showtime. */
-  const applyRules = (row: FinalRow, original: ReconciledRow) => {
-    row.decisionSource = "rules";
-    row.confidence = null;
-    if (!row.value) {
-      row.outcome = "rejected";
-      return;
-    }
-    if (original.outcome === "duplicate") {
-      row.outcome = "duplicate";
-      row.showtimeId = null;
-      row.matchMethod = null;
-      row.diffs = [];
-      return;
-    }
-    if ((original.outcome === "update" || original.outcome === "unchanged") && original.showtimeId) {
-      const s = existingById.get(original.showtimeId);
-      if (s && !claimed.has(s.id)) {
-        setMatch(row, s, (original.matchMethod as FinalMatchMethod | null) ?? "exact_key");
-        return;
-      }
-    }
-    row.outcome = "add";
-    row.showtimeId = null;
-    row.matchMethod = null;
-    row.diffs = [];
-  };
+  lockIdentityMatches(st, review);
+  acceptAgentMatches(st);
+  decideRest(st, review);
+  resolveAddCollisions(st);
+  const overrides = writeExplanations(st, opts.timezone);
+  const held = heldByRejectedRows(st, opts.timezone);
 
-  // Pass 1: agent matches (update / unchanged) claim showtimes first, in file order.
-  const deferred: { row: FinalRow; original: ReconciledRow; decision: AgentRowDecision | undefined }[] = [];
-  rows.forEach((row, i) => {
-    const original = det.rows[i]!;
-    const d = byLine.get(row.lineNumber);
-    if (!row.value) {
-      // Parser-rejected rows stay rejected, and code writes their reason from the validation issues.
-      row.outcome = "rejected";
-      if (d && d.action !== "skip") corrections++;
-      return;
-    }
-    if (d && (d.action === "update" || d.action === "unchanged")) {
-      const s = d.showtimeId ? existingById.get(d.showtimeId) : undefined;
-      const check = s && !claimed.has(s.id) ? plausibleMatch(row.value, s) : null;
-      if (s && check?.ok) {
-        setMatch(row, s, check.method);
-        row.decisionSource = "ai";
-        row.confidence = d.confidence;
-        row.explanation = d.explanation;
-        return;
-      }
-      corrections++;
-      deferred.push({ row, original, decision: undefined });
-      return;
-    }
-    deferred.push({ row, original, decision: d });
-  });
-
-  // Pass 2: everything else (rules fallbacks, adds, duplicates), in file order.
-  deferred.sort((a, b) => a.row.lineNumber - b.row.lineNumber);
-  for (const { row, original, decision: d } of deferred) {
-    if (!d) {
-      const delegated = !review?.delegated || review.delegated.includes(row.lineNumber);
-      if (!byLine.has(row.lineNumber) && review && delegated) corrections++; // agent skipped a line it owned
-      applyRules(row, original);
-      continue;
-    }
-    if (d.action === "duplicate") {
-      const targetIdx = d.duplicateOfLine != null ? (lineIndex.get(d.duplicateOfLine) ?? -1) : -1;
-      const target = rows[targetIdx];
-      // A duplicate must really repeat its target (same film and start), judged on the rows as sent.
-      if (target && target.lineNumber < row.lineNumber && target.value && sameShowtime(original.value, det.rows[targetIdx]?.value ?? null)) {
-        row.outcome = "duplicate";
-        row.showtimeId = null;
-        row.matchMethod = null;
-        row.diffs = [];
-        row.duplicateOf = target.lineNumber;
-        row.decisionSource = "ai";
-        row.confidence = d.confidence;
-        row.explanation = d.explanation;
-        continue;
-      }
-      corrections++;
-      applyRules(row, original);
-      continue;
-    }
-    if (d.action === "add") {
-      // The agent may not release a showtime the rules matched: that would archive a showtime that is in the drop.
-      if ((original.outcome === "update" || original.outcome === "unchanged") && original.showtimeId && !claimed.has(original.showtimeId)) {
-        corrections++;
-        applyRules(row, original);
-        continue;
-      }
-      const key = keyOf(row.value!.movieTitleKey, row.value!.startTime);
-      // An add can't duplicate something that will be active, or an exact showtime that's sitting there unmatched.
-      const exactLive = existing.find(
-        (s) =>
-          s.status !== "archived" &&
-          !claimed.has(s.id) &&
-          s.movieTitleKey === row.value!.movieTitleKey &&
-          s.startTime.getTime() === row.value!.startTime.getTime(),
-      );
-      if (activeKeys.has(key) || exactLive) {
-        corrections++;
-        applyRules(row, original);
-        if (row.outcome === "add" && activeKeys.has(key)) {
-          row.outcome = "duplicate";
-          row.duplicateOf = activeKeys.get(key)!;
-        }
-        if (row.outcome === "add") activeKeys.set(key, row.lineNumber);
-        continue;
-      }
-      row.outcome = "add";
-      row.showtimeId = null;
-      row.matchMethod = null;
-      row.diffs = [];
-      row.decisionSource = "ai";
-      row.confidence = d.confidence;
-      row.explanation = d.explanation;
-      activeKeys.set(key, row.lineNumber);
-      continue;
-    }
-    // "skip" on a valid row isn't allowed: only the parser rejects rows.
-    corrections++;
-    applyRules(row, original);
-  }
-
-  // Rules-made adds still can't collide with each other or with active rows.
-  for (const row of rows) {
-    if (row.outcome !== "add" || row.decisionSource !== "rules" || !row.value) continue;
-    const key = keyOf(row.value.movieTitleKey, row.value.startTime);
-    const owner = activeKeys.get(key);
-    if (owner !== undefined && owner !== row.lineNumber) {
-      row.outcome = "duplicate";
-      row.duplicateOf = owner;
-    } else {
-      activeKeys.set(key, row.lineNumber);
-    }
-  }
-
-  // Overrides and explanations.
-  let overrides = 0;
-  rows.forEach((row, i) => {
-    const original = det.rows[i]!;
-    if (row.decisionSource === "ai") {
-      const differs = row.outcome !== original.outcome || (row.showtimeId ?? null) !== (original.showtimeId ?? null);
-      row.aiOverrodeRules = differs;
-      if (differs) overrides++;
-    }
-    if (row.decisionSource === "ai") {
-      row.explanation = cleanExplanation(row.explanation, row);
-      if (row.showtimeId) row.explanation = repairSameClaims(row.explanation, row, existingById.get(row.showtimeId));
-    }
-    if (!row.explanation) row.explanation = rulesExplanation(row, existingById, opts.timezone);
-    // A new showtime of a film the theater already lists takes the stored spelling.
-    if (row.outcome === "add" && row.value) {
-      const known = existing.find((s) => s.movieTitleKey === row.value!.movieTitleKey);
-      if (known && known.movieTitle !== row.value.movieTitle) {
-        row.warnings = [...row.warnings, { column: "movie_title", message: `Partner wrote "${row.value.movieTitle}"; keeping "${known.movieTitle}".` }];
-        row.partnerTitle = row.value.movieTitle;
-        row.value = { ...row.value, movieTitle: known.movieTitle };
-      }
-    }
-  });
-
-  // A row that failed validation but still names a showtime (title + start) protects that
-  // showtime: a malformed line is not evidence the showtime was dropped.
-  const heldByRejected = new Set<string>();
-  for (const r of rows) {
-    if (r.value) continue;
-    let title = "";
-    let start = NaN;
-    for (const [header, cell] of Object.entries(r.raw)) {
-      const col = headerToColumn(header);
-      if (col === "movie_title") title = cell;
-      if (col === "start_time") start = Date.parse(cell);
-    }
-    if (!title || Number.isNaN(start)) continue;
-    const key = titleKey(title);
-    const hit = existing.find(
-      (s) => s.status !== "archived" && !claimed.has(s.id) && s.startTime.getTime() === start && (s.movieTitleKey === key || trigramSimilarity(s.movieTitleKey, key) >= FUZZY_THRESHOLD),
-    );
-    if (hit) {
-      heldByRejected.add(hit.id);
-      r.warnings = [...r.warnings, { column: "*", message: `Refers to ${hit.movieTitle} at this time, which is left as it is.` }];
-    }
-  }
-
-  // Archives: computed by code from what nothing claimed. The agent only explains.
-  const missingText = new Map((review?.missing ?? []).map((m) => [m.showtimeId, m.explanation]));
+  // Archives: computed by code from what nothing claimed, with a code-written reason.
   const archives: FinalArchive[] = existing
-    .filter((s) => s.status !== "archived" && !claimed.has(s.id) && !heldByRejected.has(s.id))
-    .map((s) => {
-      const raw = missingText.get(s.id);
-      const text = raw && !SUSPICIOUS.test(raw) ? raw : undefined;
-      return { showtime: s, explanation: text ?? MISSING_RULES_TEXT, decisionSource: text ? "ai" : "rules" };
-    });
+    .filter((s) => s.status !== "archived" && !st.claimed.has(s.id) && !held.has(s.id))
+    .map((s) => ({ showtime: s, explanation: MISSING_TEXT, decisionSource: "rules" }));
 
   const counts = { add: 0, update: 0, unchanged: 0, duplicate: 0, rejected: 0, archive: archives.length } as MergeResult["counts"];
-  for (const r of rows) counts[r.outcome]++;
+  for (const r of st.rows) counts[r.outcome]++;
 
-  return { rows, archives, counts, overrides, corrections };
+  return { rows: st.rows, archives, counts, overrides, corrections: st.corrections };
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** One summary of the drop, written by code from the verified result, so it never contradicts the rows. */
+export function summarizeMerge(m: MergeResult, agentRan: boolean): string {
+  const c = m.counts;
+  const parts = [
+    c.add && plural(c.add, "new showtime"),
+    c.update && plural(c.update, "update"),
+    c.unchanged && `${c.unchanged} unchanged`,
+    c.archive && `${c.archive} to archive`,
+    c.duplicate && plural(c.duplicate, "duplicate row"),
+    c.rejected && plural(c.rejected, "row") + " not imported",
+  ].filter(Boolean) as string[];
+  const counts = parts.length ? `${parts.join(", ")}.` : "No changes.";
+  if (!agentRan) return counts;
+  const notes = [
+    m.overrides ? `the agent changed ${plural(m.overrides, "call")} the rules made` : null,
+    m.corrections ? `${plural(m.corrections, "agent decision")} failed the checks and used the rules' answer` : null,
+  ].filter(Boolean) as string[];
+  return notes.length ? `${counts} ${notes.join("; ").replace(/^./, (x) => x.toUpperCase())}.` : counts;
 }

@@ -26,9 +26,14 @@ if (!dbName.includes("scale")) {
 
 const sql = postgres(ownerUrl, { max: 4, onnotice: () => undefined });
 
-// Deterministic PRNG so runs are comparable.
+// mulberry32: small, fast, and deterministic so runs are comparable.
 let seed = 42;
-const rand = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);
+const rand = () => {
+  seed = (seed + 0x6d2b79f5) | 0;
+  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 2 ** 32;
+};
 const pick = <T>(xs: readonly T[]) => xs[Math.floor(rand() * xs.length)]!;
 
 const A = ["Silent", "Crimson", "Last", "Hidden", "Electric", "Broken", "Golden", "Midnight", "Lost", "Wild",
@@ -38,11 +43,11 @@ const N = ["Harbor", "Kingdom", "Signal", "Garden", "Empire", "River", "Machine"
   "Orchard", "Station", "Mirror", "Voyage", "Canyon", "Letter", "Island", "Circus", "Engine", "Lighthouse",
   "Highway", "Country", "Season", "Promise", "Shadow", "Monarch", "Archive", "Harvest", "Parade", "Atlas"];
 const S = ["", "", "", "", ": Reckoning", ": Origins", " Returns", " Rising", ": Part Two", " of the Deep"];
-// 30 × 30 × 10 ≈ 9,000 distinct titles, with the duplicates a real catalogue has.
-const titles = [...new Set(Array.from({ length: 12_000 }, () => `${pick(A)} ${pick(N)}${pick(S)}`))].map((t) => ({
-  title: t,
-  key: titleKey(t),
-}));
+// Two title shapes ("Silent Harbor: Origins", "Letter of the Copper Signal") give roughly
+// 10,000 distinct titles, with the near-duplicates a real catalogue has.
+const makeTitle = () =>
+  rand() < 0.6 ? `${pick(A)} ${pick(N)}${pick(S)}` : `${pick(N)} of the ${pick(A)} ${pick(N)}`;
+const titles = [...new Set(Array.from({ length: 30_000 }, makeTitle))].map((t) => ({ title: t, key: titleKey(t) }));
 
 const FORMATS = ["Standard", "Standard", "Standard", "IMAX", "3D", "Dolby Cinema", "4DX"];
 const LANGS = ["English", "English", "English", "English", "Spanish", "French", "Japanese", "Korean"];
@@ -110,7 +115,8 @@ for (let done = 0; done < TOTAL; done += CHUNK) {
 }
 
 await sql`analyze showtime`;
-const [row] = await sql<{ n: number }[]>`select count(*)::int as n from showtime`;
+const [row] = await sql<{ n: number; titles: number }[]>`
+  select count(*)::int as n, count(distinct movie_title_key)::int as titles from showtime`;
 const n = row?.n ?? 0;
-console.log(`showtime now holds ${n} rows (${titles.length} distinct titles), ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+console.log(`showtime now holds ${n} rows (${row?.titles ?? 0} distinct titles), ${((performance.now() - t0) / 1000).toFixed(1)}s`);
 await sql.end();

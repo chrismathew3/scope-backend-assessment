@@ -44,7 +44,7 @@ export interface Principal {
   theaterRoles: Record<string, TheaterRole>;
 }
 
-export function roleIn(p: Principal, theaterId: string): TheaterRole | null {
+function roleIn(p: Principal, theaterId: string): TheaterRole | null {
   if (p.isSuperAdmin) return "admin";
   return p.theaterRoles[theaterId] ?? null;
 }

@@ -1,7 +1,7 @@
 import { trpcServer } from "@hono/trpc-server";
 import { Scalar } from "@scalar/hono-api-reference";
 import { sql } from "drizzle-orm";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { logger } from "hono/logger";
 import { secureHeaders } from "hono/secure-headers";
@@ -37,8 +37,19 @@ app.use(async (c, next) => {
   await next();
 });
 
-// The web app proxies through Next, which sets x-forwarded-for.
-const clientIp = (req: Request) => req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
+/**
+ * Client IP for rate limiting and audit, from sources a client can't forge:
+ * on Vercel, the headers its edge sets; on the Bun server, the socket address
+ * (Bun passes the server as the app's env). x-forwarded-for is never trusted.
+ */
+function clientIp(c: Context): string {
+  if (process.env.VERCEL) {
+    const ip = c.req.header("x-real-ip") ?? c.req.header("x-vercel-forwarded-for")?.split(",")[0]?.trim();
+    if (ip) return ip;
+  }
+  const server = c.env as { requestIP?: (req: Request) => { address: string } | null } | undefined;
+  return server?.requestIP?.(c.req.raw)?.address ?? "unknown";
+}
 
 const health = async (c: { json: (v: unknown) => Response }) => {
   await db.execute(sql`select 1`);
@@ -53,12 +64,14 @@ app.use(
   trpcServer({
     router: appRouter,
     endpoint: "/trpc",
-    createContext: (opts) => createContext({ req: opts.req, resHeaders: opts.resHeaders, ip: clientIp(opts.req) }),
+    createContext: (opts, c) => createContext({ req: opts.req, resHeaders: opts.resHeaders, ip: clientIp(c) }),
   }),
 );
 
-const restContext = ({ req, res }: { req: Request; res: { setHeader: (k: string, v: string[]) => void } }) =>
-  createContext({ req, resHeaders: { append: (k, v) => res.setHeader(k, [v]) }, ip: clientIp(req) });
+const restContext =
+  (ip: string) =>
+  ({ req, res }: { req: Request; res: { setHeader: (k: string, v: string[]) => void } }) =>
+    createContext({ req, resHeaders: { append: (k, v) => res.setHeader(k, [v]) }, ip });
 
 // Same procedures as REST, generated from the same Zod schemas.
 app.get("/api/openapi.json", (c) => c.json(openApiDocument));
@@ -70,6 +83,6 @@ app.all("/api/v1/*", (c) =>
     req: c.req.raw,
     // At runtime this adapter passes a Node-style `res` (its types say otherwise), so
     // give the context the same append() the tRPC adapter provides.
-    createContext: restContext as never,
+    createContext: restContext(clientIp(c)) as never,
   }),
 );

@@ -5,12 +5,13 @@
  *    then fetches showtimes by exact title key (b-tree), so cost tracks matches, not table size
  *  - filter values come from a skip scan over narrow indexes
  *  - keyset pagination (no OFFSET), count capped at 10,000
- * Measured on 500,000 showtimes: see README "Search at scale" and src/scripts/bench-search.ts.
+ * Measured on 500,000 showtimes: see docs/search-at-scale.md and src/scripts/bench-search.ts.
  */
 import {
   ADMIN_ONLY_SORTS,
   type MovieStatus,
   type Principal,
+  type ShowtimeAdminRow,
   type ShowtimeRow,
   type ShowtimeSort,
   ShowtimeListInput,
@@ -28,7 +29,7 @@ type ListInput = z.output<typeof ShowtimeListInput>;
 const COUNT_CAP = 10_000;
 
 /** Which theaters the query may touch, split by what the caller can see there. */
-export function scopeFor(p: Principal, theaterId?: string) {
+function scopeFor(p: Principal, theaterId?: string) {
   const member = Object.keys(p.theaterRoles);
   if (theaterId && !member.includes(theaterId)) {
     throw new TRPCError({ code: "NOT_FOUND", message: "Theater not found" });
@@ -40,7 +41,7 @@ export function scopeFor(p: Principal, theaterId?: string) {
 }
 
 /** Admin theaters: every row. Viewer theaters: active rows only. */
-export function scopeCondition(adminIds: string[], viewerIds: string[]): SQL {
+function scopeCondition(adminIds: string[], viewerIds: string[]): SQL {
   const parts: SQL[] = [];
   if (adminIds.length) parts.push(inArray(showtimes.theaterId, adminIds));
   if (viewerIds.length) parts.push(and(inArray(showtimes.theaterId, viewerIds), eq(showtimes.status, "active"))!);
@@ -56,22 +57,28 @@ const MAX_TITLE_KEYS = 2_000;
  * Title keys that match the search, from the title catalog: substring, or word
  * similarity for typos ("oppenhiemer" -> "oppenheimer"). Undefined when there is no search.
  */
-export async function matchTitleKeys(db: Queryable, q: string | undefined): Promise<string[] | undefined> {
+async function matchTitleKeys(db: Queryable, q: string | undefined): Promise<string[] | undefined> {
   if (!q) return undefined;
   const key = titleKey(q);
   if (!key) return undefined;
+  const contains = sql`${movieTitles.key} like ${"%" + escapeLike(key) + "%"}`;
   // Trigrams need 3+ characters; shorter input is a prefix match.
   const cond =
-    key.length < 3
-      ? sql`${movieTitles.key} like ${escapeLike(key) + "%"}`
-      : sql`(${movieTitles.key} like ${"%" + escapeLike(key) + "%"} or ${key} <% ${movieTitles.key})`;
+    key.length < 3 ? sql`${movieTitles.key} like ${escapeLike(key) + "%"}` : sql`(${contains} or ${key} <% ${movieTitles.key})`;
   // Default 0.6 misses swapped letters ("oppenhiemer" scores 0.5). Local to this transaction.
   await db.execute(sql`select set_config('pg_trgm.word_similarity_threshold', '0.45', true)`);
-  const rows = await db.select({ key: movieTitles.key }).from(movieTitles).where(cond).limit(MAX_TITLE_KEYS);
+  // The catalog spans every theater, so when the cap bites, keep the best matches:
+  // substring hits first, then closest typos, then by key so the cut is stable.
+  const rows = await db
+    .select({ key: movieTitles.key })
+    .from(movieTitles)
+    .where(cond)
+    .orderBy(desc(contains), desc(sql`word_similarity(${key}, ${movieTitles.key})`), asc(movieTitles.key))
+    .limit(MAX_TITLE_KEYS);
   return rows.map((r) => r.key);
 }
 
-export function searchCondition(titleKeys: string[] | undefined): SQL | undefined {
+function searchCondition(titleKeys: string[] | undefined): SQL | undefined {
   if (!titleKeys) return undefined;
   return titleKeys.length ? inArray(showtimes.movieTitleKey, titleKeys) : sql`false`;
 }
@@ -103,7 +110,7 @@ function decodeCursor(cursor: string): [string, string] {
   throw new TRPCError({ code: "BAD_REQUEST", message: "Invalid cursor" });
 }
 
-export function filterConditions(
+function filterConditions(
   input: ListInput,
   adminIds: string[],
   titleKeys?: string[],
@@ -185,9 +192,10 @@ export async function listShowtimes(db: Queryable, p: Principal, input: ListInpu
   };
 }
 
-/** Shapes a row for the caller's role in that theater. Viewers never receive internal fields. */
-export function toRow(s: typeof showtimes.$inferSelect, theaterName: string, isAdmin: boolean): ShowtimeRow {
-  const base = {
+type ShowtimeRecord = typeof showtimes.$inferSelect;
+
+function publicFields(s: ShowtimeRecord, theaterName: string) {
+  return {
     id: s.id,
     theaterId: s.theaterId,
     theaterName,
@@ -199,15 +207,23 @@ export function toRow(s: typeof showtimes.$inferSelect, theaterName: string, isA
     format: s.format,
     rating: s.rating,
   };
-  if (!isAdmin) return { access: "viewer", ...base };
+}
+
+/** The admin shape: public fields plus internal state. */
+export function toAdminRow(s: ShowtimeRecord, theaterName: string): ShowtimeAdminRow {
   return {
     access: "admin",
-    ...base,
+    ...publicFields(s, theaterName),
     movieStatus: s.movieStatus,
     status: s.status,
     lastUpdated: s.updatedAt.toISOString(),
     version: s.version,
   };
+}
+
+/** Shapes a row for the caller's role in that theater. Viewers never receive internal fields. */
+export function toRow(s: ShowtimeRecord, theaterName: string, isAdmin: boolean): ShowtimeRow {
+  return isAdmin ? toAdminRow(s, theaterName) : { access: "viewer", ...publicFields(s, theaterName) };
 }
 
 export async function showtimeFacets(db: Queryable, p: Principal, theaterId?: string) {

@@ -27,4 +27,13 @@ if (!exists) {
 
 await migrate(drizzle(sql), { migrationsFolder: new URL("../../drizzle", import.meta.url).pathname });
 console.log("migrations applied");
+
+// The demo reset wipes data, so the app role may only call it on a demo deployment.
+// Runs every time, so flipping DEMO_MODE and re-migrating takes effect either way.
+if (env.DEMO_MODE) {
+  await sql.unsafe(`grant execute on function app_demo_reset(jsonb) to ${appRole}`);
+} else {
+  await sql.unsafe(`revoke execute on function app_demo_reset(jsonb) from ${appRole}`);
+}
+console.log(`demo reset ${env.DEMO_MODE ? "enabled" : "disabled"} for ${appRole}`);
 await sql.end();

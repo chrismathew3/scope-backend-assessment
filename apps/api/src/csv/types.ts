@@ -67,6 +67,8 @@ export interface ReconciledRow extends ParsedRow {
   showtimeId: string | null;
   matchMethod: MatchMethod | null;
   diffs: FieldDiff[];
+  /** For duplicates: the line that is kept instead. */
+  duplicateOf: number | null;
 }
 
 export interface ReconcileResult {

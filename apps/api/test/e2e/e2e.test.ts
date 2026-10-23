@@ -197,14 +197,13 @@ describe.skipIf(!RUN)("end to end", () => {
     expect(ok.status).toBe(200);
     expect(ok.json.movieStatus).toBe("flagged");
     expect((await users.avery.patch("/showtimes/st-dt-001", { expectedVersion: 1, movieStatus: "draft" })).status).toBe(409);
-    // Reactivating an archived row that would duplicate an active one is refused by the unique index.
-    await sql`update showtime set status='active' where id='st-dt-005'`; // make Wonka active
     await reset();
   });
 
   test("admins have full write: edit any field, create, archive; viewers can't", async () => {
     const before = await showtime("st-rv-001");
-    const [{ v: versionBefore }] = await sql`select schedule_version as v from theater where id='theater-riverside'`;
+    const versionOf = async () => (await sql`select schedule_version as v from theater where id='theater-riverside'`)[0]?.v as number;
+    const versionBefore = await versionOf();
     const start = new Date(before.start_time.getTime() + 30 * 60_000).toISOString();
     const end = new Date(before.end_time.getTime() + 30 * 60_000).toISOString();
 
@@ -223,8 +222,7 @@ describe.skipIf(!RUN)("end to end", () => {
     expect(after.auditorium_key).toBe("auditorium 7");
     expect(after.start_time.toISOString()).toBe(start);
     expect(after.version).toBe(before.version + 1);
-    const [{ v: versionAfter }] = await sql`select schedule_version as v from theater where id='theater-riverside'`;
-    expect(versionAfter).toBeGreaterThan(versionBefore);
+    expect(await versionOf()).toBeGreaterThan(versionBefore);
     const [entry] = await sql`select * from audit_log where action='showtime.update' and entity_id='st-rv-001' order by created_at desc limit 1`;
     expect(entry).toBeTruthy();
 
@@ -282,7 +280,7 @@ describe.skipIf(!RUN)("end to end", () => {
       expect(d.rows.some((r: any) => /operator|instruction/i.test(r.explanation))).toBe(false);
       // Stored titles win over partner spelling.
       expect(rows[2].diffs.some((x: any) => x.field === "movieTitle")).toBe(false);
-      expect(rows[2].warnings.some((w: any) => w.message.includes("Spider Man - Homecoming"))).toBe(true);
+      expect(rows[2].partnerTitle).toBe("Spider Man - Homecoming");
 
       // Viewers and other-theater admins can't see or apply it.
       expect((await users.riley.get(`/imports/${d.summary.id}`)).status).toBe(404);

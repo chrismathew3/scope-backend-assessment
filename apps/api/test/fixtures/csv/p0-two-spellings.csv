@@ -1,0 +1,9 @@
+theater_name,movie_title,auditorium,start_time,end_time,language,format,rating,last_updated
+Downtown Cinema 7,Spiderman Homecoming,Auditorium 2,2025-03-15T18:00:00Z,2025-03-15T20:13:00Z,EN,2D,PG-13,2025-03-15T09:00:00Z
+Downtown Cinema 7,Spider-Man: Homecoming,Auditorium 1,2025-03-15T18:00:00Z,2025-03-15T20:13:00Z,EN,2D,PG-13,2025-03-15T09:00:00Z
+Downtown Cinema 7,Inside Out 2,Auditorium 2,2025-03-15T17:30:00Z,2025-03-15T19:20:00Z,EN,3D,PG,2025-03-15T09:00:00Z
+Downtown Cinema 7,Dune: Part Two,Auditorium 1,2025-03-15T20:00:00Z,2025-03-15T22:46:00Z,EN,IMAX,PG-13,2025-03-15T09:00:00Z
+Downtown Cinema 7,Dune: Part Two,Auditorium 1,2025-03-15T22:45:00Z,2025-03-16T01:31:00Z,EN,2D,PG-13,2025-03-15T09:00:00Z
+Downtown Cinema 7,Kung Fu Panda 4,Auditorium 3,2025-03-16T17:30:00Z,2025-03-16T19:05:00Z,EN,2D,PG,2025-03-15T09:00:00Z
+Downtown Cinema 7,Gladiator II,Auditorium 4,2025-03-17T20:00:00Z,2025-03-17T22:30:00Z,EN,2D,R,2025-03-15T09:00:00Z
+Downtown Cinema 7,Gladiatr II,Auditorium 5,2025-03-17T20:00:00Z,2025-03-17T22:30:00Z,EN,2D,R,2025-03-15T09:00:00Z

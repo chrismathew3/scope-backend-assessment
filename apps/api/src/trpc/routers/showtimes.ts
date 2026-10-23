@@ -20,17 +20,21 @@ import {
   auditSnapshot,
   DUPLICATE_ACTIVE,
   diffShowtime,
+  normalizeNewShowtime,
   normalizeShowtimeFields,
   ShowtimeFieldError,
 } from "../../services/showtime-edit";
-import { listShowtimes, showtimeFacets, toRow } from "../../services/showtime-query";
+import { listShowtimes, showtimeFacets, toAdminRow, toRow } from "../../services/showtime-query";
 import { type AuthedContext, authedProcedure, isUniqueViolation, requireTheater, router } from "../init";
 
 const tags = ["showtimes"];
 
-function normalizeOrThrow(input: Parameters<typeof normalizeShowtimeFields>[0]) {
+const staleVersion = () =>
+  new TRPCError({ code: "CONFLICT", message: "This showtime changed since you loaded it. Refresh and try again." });
+
+function fieldErrorsAs400<T>(run: () => T): T {
   try {
-    return normalizeShowtimeFields(input);
+    return run();
   } catch (e) {
     if (e instanceof ShowtimeFieldError) throw new TRPCError({ code: "BAD_REQUEST", message: e.message });
     throw e;
@@ -45,6 +49,13 @@ async function writeShowtime<T>(run: () => Promise<T>): Promise<T> {
     if (isUniqueViolation(e)) throw new TRPCError({ code: "CONFLICT", message: DUPLICATE_ACTIVE });
     throw e;
   }
+}
+
+/** The single row a write returned. */
+function single<T>(rows: T[]): T {
+  const [row] = rows;
+  if (!row) throw new Error("Expected the write to return a row");
+  return row;
 }
 
 /** Imports compare against the schedule they previewed; any schedule write makes older previews stale. */
@@ -116,36 +127,30 @@ export const showtimesRouter = router({
         .from(theaters)
         .where(eq(theaters.id, input.theaterId));
       if (!theater) throw new TRPCError({ code: "NOT_FOUND", message: "Theater not found" });
-      const fields = normalizeOrThrow(input);
-      const [created] = await writeShowtime(() =>
-        ctx.tx
-          .insert(showtimes)
-          .values({
-            theaterId: input.theaterId,
-            movieTitle: fields.movieTitle!,
-            movieTitleKey: fields.movieTitleKey!,
-            auditorium: fields.auditorium!,
-            auditoriumKey: fields.auditoriumKey!,
-            startTime: fields.startTime!,
-            endTime: fields.endTime!,
-            language: fields.language!,
-            format: fields.format!,
-            rating: fields.rating!,
-            movieStatus: input.movieStatus,
-            status: input.status,
-            archivedAt: input.status === "archived" ? new Date() : null,
-          })
-          .returning(),
+      const fields = fieldErrorsAs400(() => normalizeNewShowtime(input));
+      const created = single(
+        await writeShowtime(() =>
+          ctx.tx
+            .insert(showtimes)
+            .values({
+              theaterId: input.theaterId,
+              ...fields,
+              movieStatus: input.movieStatus,
+              status: input.status,
+              archivedAt: input.status === "archived" ? new Date() : null,
+            })
+            .returning(),
+        ),
       );
       await bumpScheduleVersion(ctx, input.theaterId);
       await audit(ctx, {
         action: "showtime.create",
         entityType: "showtime",
-        entityId: created!.id,
+        entityId: created.id,
         theaterId: input.theaterId,
-        after: auditSnapshot(created!),
+        after: auditSnapshot(created),
       });
-      return toRow(created!, theater.name, true) as ShowtimeAdminRow;
+      return toAdminRow(created, theater.name);
     }),
 
   update: authedProcedure
@@ -172,11 +177,9 @@ export const showtimesRouter = router({
         .where(eq(showtimes.id, input.id));
       if (!current) throw new TRPCError({ code: "NOT_FOUND", message: "Showtime not found" });
       requireTheater(ctx, current.s.theaterId, "showtime.update");
-      if (current.s.version !== input.expectedVersion) {
-        throw new TRPCError({ code: "CONFLICT", message: "This showtime changed since you loaded it. Refresh and try again." });
-      }
+      if (current.s.version !== input.expectedVersion) throw staleVersion();
 
-      const patch = normalizeOrThrow(input);
+      const patch = fieldErrorsAs400(() => normalizeShowtimeFields(input));
       if (input.movieStatus) patch.movieStatus = input.movieStatus;
       if (input.status) patch.status = input.status;
       const start = patch.startTime ?? current.s.startTime;
@@ -185,17 +188,24 @@ export const showtimesRouter = router({
 
       const { before, after, changed } = diffShowtime(current.s, patch);
       // Nothing actually differs: no write, no version bump, no audit noise.
-      if (changed.length === 0) return toRow(current.s, current.theaterName, true) as ShowtimeAdminRow;
+      if (changed.length === 0) return toAdminRow(current.s, current.theaterName);
 
-      const set: Partial<typeof showtimes.$inferInsert> = { version: current.s.version + 1 };
+      const set: Partial<typeof showtimes.$inferInsert> = {};
       for (const f of changed) Object.assign(set, { [f]: patch[f] });
       if (changed.includes("movieTitle")) set.movieTitleKey = patch.movieTitleKey;
       if (changed.includes("auditorium")) set.auditoriumKey = patch.auditoriumKey;
       if (changed.includes("status")) set.archivedAt = patch.status === "archived" ? new Date() : null;
 
+      // The version check is part of the UPDATE, so of two concurrent edits from the
+      // same version only the first matches a row; the other gets a 409.
       const [updated] = await writeShowtime(() =>
-        ctx.tx.update(showtimes).set(set).where(eq(showtimes.id, input.id)).returning(),
+        ctx.tx
+          .update(showtimes)
+          .set({ ...set, version: sql`${showtimes.version} + 1` })
+          .where(and(eq(showtimes.id, input.id), eq(showtimes.version, input.expectedVersion)))
+          .returning(),
       );
+      if (!updated) throw staleVersion();
       // movieStatus is internal review state that imports don't compare; everything else is the schedule.
       if (changed.some((f) => f !== "movieStatus")) await bumpScheduleVersion(ctx, current.s.theaterId);
       await audit(ctx, {
@@ -206,7 +216,7 @@ export const showtimesRouter = router({
         before,
         after,
       });
-      return toRow(updated!, current.theaterName, true) as ShowtimeAdminRow;
+      return toAdminRow(updated, current.theaterName);
     }),
 
   archiveAll: authedProcedure
@@ -228,6 +238,7 @@ export const showtimesRouter = router({
         .set({ status: "archived", archivedAt: new Date(), version: sql`${showtimes.version} + 1` })
         .where(and(eq(showtimes.theaterId, input.theaterId), ne(showtimes.status, "archived")))
         .returning({ id: showtimes.id });
+      if (rows.length === 0) return { archived: 0 };
       await bumpScheduleVersion(ctx, input.theaterId);
       await audit(ctx, {
         action: "schedule.archive_all",

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-/** Optional secret where an empty string means "not set". */
+/** Optional secret. Empty, or shorter than 10 characters after trimming, counts as not set. */
 const optionalSecret = z
   .string()
   .optional()

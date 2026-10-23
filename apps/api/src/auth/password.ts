@@ -33,7 +33,7 @@ export async function verifyPassword(password: string, stored: string): Promise<
 export const DUMMY_HASH =
   "scrypt$32768$AAAAAAAAAAAAAAAAAAAAAA==$" + Buffer.alloc(KEYLEN).toString("base64");
 
-/** Readable temporary password, ~100 bits of entropy. */
+/** Readable temporary password: 20 characters from a 55-letter alphabet, about 115 bits. */
 export function generateTemporaryPassword(): string {
   const alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   const bytes = randomBytes(20);
