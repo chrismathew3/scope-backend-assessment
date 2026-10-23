@@ -1,0 +1,13 @@
+theater_name,movie_title,auditorium,start_time,end_time,language,format,rating,last_updated
+Downtown Cinema 7,"Wonka, the Musical",Auditorium 3,2025-03-15T16:00:00Z,2025-03-15T17:56:00Z,EN,2D,PG,
+
+   ,  , ,,,,,,
+Downtown Cinema 7,"Two
+Lines",Auditorium 4,2025-03-15T19:00:00Z,2025-03-15T21:00:00Z,EN,2D,PG,
+Downtown Cinema 7,Short Row,Auditorium 4
+Downtown Cinema 7,Long Row,Auditorium 4,2025-03-15T19:00:00Z,2025-03-15T21:00:00Z,EN,2D,PG,,surprise
+Riverside Multiplex,Elsewhere,Auditorium A,2025-03-15T19:00:00Z,2025-03-15T21:00:00Z,EN,2D,PG,
+Downtown Cinema 7,=HYPERLINK("x"),Auditorium 4,2025-03-15T22:00:00Z,2025-03-15T23:40:00Z,EN,2D,PG,
+Downtown Cinema 7,,Auditorium 4,2025-03-15T22:00:00Z,2025-03-15T23:40:00Z,EN,2D,PG,
+
+

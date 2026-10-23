@@ -1,48 +1,21 @@
 {
-  "name": "scope-movie-assessment",
-  "version": "0.1.0",
+  "name": "scope-showtimes",
   "private": true,
   "type": "module",
+  "workspaces": ["apps/*", "packages/*"],
   "scripts": {
-    "build": "next build",
-    "check": "next lint && tsc --noEmit",
-    "dev": "next dev --turbo",
-    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,mdx}\" --cache",
-    "format:write": "prettier --write \"**/*.{ts,tsx,js,jsx,mdx}\" --cache",
-    "lint": "next lint",
-    "lint:fix": "next lint --fix",
-    "preview": "next build && next start",
-    "start": "next start",
-    "test": "jest",
-    "test:watch": "jest --watch",
-    "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@t3-oss/env-nextjs": "^0.12.0",
-    "@supabase/supabase-js": "^2.49.1",
-    "next": "^15.2.3",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "server-only": "^0.0.1",
-    "zod": "^3.24.2"
-  },
-  "devDependencies": {
-    "@eslint/eslintrc": "^3.3.1",
-    "@tailwindcss/postcss": "^4.0.15",
-    "@types/node": "^20.14.10",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "eslint": "^9.23.0",
-    "eslint-config-next": "^15.2.3",
-    "postcss": "^8.5.3",
-    "prettier": "^3.5.3",
-    "prettier-plugin-tailwindcss": "^0.6.11",
-    "tailwindcss": "^4.0.15",
-    "typescript": "^5.8.2",
-    "typescript-eslint": "^8.27.0"
-  },
-  "ct3aMetadata": {
-    "initVersion": "7.40.0"
-  },
-  "packageManager": "npm@10.8.2"
+    "dev": "bun run --parallel --filter '@scope/api' --filter '@scope/web' dev",
+    "dev:web": "bun run --filter '@scope/web' dev",
+    "dev:api": "bun run --filter '@scope/api' dev",
+    "build": "bun run --filter '@scope/web' build",
+    "typecheck": "bun run --filter '*' typecheck",
+    "lint": "bun run --filter '@scope/web' lint",
+    "format:check": "bun run --filter '@scope/web' format:check",
+    "test": "bun run --filter '@scope/api' test",
+    "db:generate": "bun run --filter '@scope/api' db:generate",
+    "db:migrate": "bun run --filter '@scope/api' db:migrate",
+    "db:seed": "bun run --filter '@scope/api' db:seed",
+    "db:seed:scale": "bun run --filter '@scope/api' db:seed:scale",
+    "db:reset": "bun run --filter '@scope/api' db:reset"
+  }
 }
