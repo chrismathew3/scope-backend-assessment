@@ -52,7 +52,7 @@ export function ChangeRow({
   return (
     <div
       role="listitem"
-      className={`border-b border-line transition-colors duration-150 ${expanded ? "bg-wash-soft" : ""}`}
+      className={`border-b border-line [overflow-wrap:anywhere] transition-colors duration-150 ${expanded ? "bg-wash-soft" : ""}`}
     >
       <div
         ref={ref}

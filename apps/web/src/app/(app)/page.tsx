@@ -203,8 +203,8 @@ export default function ShowtimesPage() {
       <div className={`${column} pt-8`}>
         <h1 className={h1}>No theaters yet</h1>
         <p className="mt-2 text-[15px] text-pretty text-ink-2">
-          You&apos;re signed in, but you don&apos;t belong to any theater, so there are no showtimes to show. An admin
-          or a super admin can add you to one from People.
+          You&apos;re signed in, but you don&apos;t belong to any theater, so there are no showtimes to show. Ask a
+          super admin to add you to one.
         </p>
       </div>
     );
@@ -431,7 +431,8 @@ export default function ShowtimesPage() {
                   className={`border-b border-line transition-colors hover:bg-wash-soft ${admin ? "cursor-pointer" : ""} ${admin?.status === "archived" ? "text-ink-3" : ""}`}
                 >
                   {!scopeId && <td className="py-2.5 pr-4 text-ink-2">{row.theaterName}</td>}
-                  <td className="py-2.5 pr-4 font-medium">
+                  {/* Long unbroken titles wrap anywhere instead of pushing the other columns off-screen. */}
+                  <td className="min-w-48 py-2.5 pr-4 font-medium [overflow-wrap:anywhere] whitespace-normal">
                     {admin ? (
                       <button
                         type="button"
@@ -466,7 +467,7 @@ export default function ShowtimesPage() {
                       )}
                     </td>
                   )}
-                  <td className="py-2.5 pr-4">{row.auditorium}</td>
+                  <td className="min-w-24 py-2.5 pr-4 [overflow-wrap:anywhere] whitespace-normal">{row.auditorium}</td>
                   <td className="tnum py-2.5 pr-4 whitespace-nowrap">
                     <span className="text-ink-2">{formatDay(row.startTime, tz)}</span>&nbsp;{" "}
                     {formatTime(row.startTime, tz)}
@@ -659,10 +660,10 @@ function PhoneRowText({ row, tz, showTheater }: { row: ShowtimeRow; tz: string |
   return (
     <div className="min-w-0 flex-1">
       <div className="flex items-baseline justify-between gap-3">
-        <span className="font-medium">{row.movieTitle}</span>
+        <span className="min-w-0 font-medium [overflow-wrap:anywhere]">{row.movieTitle}</span>
         <span className="tnum shrink-0 text-[13px]">{formatTime(row.startTime, tz)}</span>
       </div>
-      <div className="mt-0.5 text-[13px] text-ink-2">
+      <div className="mt-0.5 text-[13px] [overflow-wrap:anywhere] text-ink-2">
         {[
           showTheater ? row.theaterName : null,
           row.auditorium,

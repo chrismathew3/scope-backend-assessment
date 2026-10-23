@@ -259,6 +259,7 @@ describe("mergeAgentReview", () => {
     const csv = [
       "theater_name,movie_title,auditorium,start_time,end_time,language,format,rating,last_updated",
       "Downtown Cinema 7,Dune: Part Two," + "x".repeat(400) + ",2025-03-15T20:00:00Z,2025-03-15T22:46:00Z,EN,2D,PG-13,",
+      "Downtown Cinema 7,Wonka,Auditorium 3,2025-03-15T16:00:00Z,2025-03-15T17:56:00Z,EN,2D,PG,",
     ].join("\n");
     const parsed = parseShowtimeCsv(new TextEncoder().encode(csv), { theaterName: "Downtown Cinema 7", timezone: TZ, now: new Date("2025-03-01") });
     const existing = existingForFile(fixtureExisting("theater-downtown"), []);
@@ -377,8 +378,10 @@ describe("P0: wrong films are never matched silently", () => {
 
 describe("P0: rejected rows protect their showtime in the theater's timezone", () => {
   const LONG = "x".repeat(400);
+  // Wonka is a valid row: a file with none is refused before it gets here.
+  const WONKA = "Downtown Cinema 7,Wonka,Auditorium 3,2025-03-15T16:00:00Z,2025-03-15T17:56:00Z,EN,2D,PG,";
   const run = (rows: string[]) => {
-    const csv = ["theater_name,movie_title,auditorium,start_time,end_time,language,format,rating,last_updated", ...rows].join("\n");
+    const csv = ["theater_name,movie_title,auditorium,start_time,end_time,language,format,rating,last_updated", ...rows, WONKA].join("\n");
     const parsed = parseShowtimeCsv(new TextEncoder().encode(csv), { theaterName: "Downtown Cinema 7", timezone: TZ, now: new Date("2025-03-01") });
     const existing = existingForFile(fixtureExisting("theater-downtown"), []);
     return mergeAgentReview(reconcile(parsed.rows, existing), null, existing, { timezone: TZ });
@@ -393,11 +396,30 @@ describe("P0: rejected rows protect their showtime in the theater's timezone", (
 
   test("a row rejected for being another theater's protects nothing here", () => {
     const m = run([
-      "Downtown Cinema 7,Wonka,Auditorium 3,2025-03-15T16:00:00Z,2025-03-15T17:56:00Z,EN,2D,PG,",
       "Riverside Multiplex,Dune: Part Two,Auditorium 1,2025-03-15T20:00:00Z,2025-03-15T22:46:00Z,EN,2D,PG-13,",
     ]);
-    expect(m.rows[1]!.outcome).toBe("rejected");
+    expect(m.rows[0]!.outcome).toBe("rejected");
     expect(m.archives.map((a) => a.showtime.id)).toContain("st-dt-003");
+  });
+
+  test("a row whose start can't be read protects every stored showtime of that film", () => {
+    // Downtown stores Dune: Part Two twice (st-dt-003, st-dt-004). The row can't say which one it meant.
+    const m = run([
+      "Downtown Cinema 7,Dune Part 2,Auditorium 1,sometime saturday,2025-03-15T22:46:00Z,EN,2D,PG-13,",
+    ]);
+    expect(m.rows[0]!.outcome).toBe("rejected");
+    const archived = m.archives.map((a) => a.showtime.id);
+    expect(archived).not.toContain("st-dt-003");
+    expect(archived).not.toContain("st-dt-004");
+    expect(archived).toContain("st-dt-001"); // other films are still archived as usual
+    expect(m.rows[0]!.warnings.at(-1)!.message).toContain("all 2 stored showtimes of Dune: Part Two");
+  });
+
+  test("with a readable start, only that one showtime is protected", () => {
+    const m = run([`Downtown Cinema 7,Dune: Part Two,${LONG},2025-03-15T20:00:00Z,2025-03-15T22:46:00Z,EN,2D,PG-13,`]);
+    const archived = m.archives.map((a) => a.showtime.id);
+    expect(archived).not.toContain("st-dt-003");
+    expect(archived).toContain("st-dt-004");
   });
 });
 
@@ -548,9 +570,9 @@ describe("second-pass review fixes", () => {
     expect(m.rows.filter((r) => r.outcome === "add")).toHaveLength(1);
   });
 
-  test("a 10,000-row file of new titles merges in well under a second", () => {
+  test("a 5,000-row file (the upload limit) of new titles merges in well under a second", () => {
     const start = Date.UTC(2025, 3, 1, 15);
-    const lines = Array.from({ length: 10_000 }, (_, i) => {
+    const lines = Array.from({ length: 5_000 }, (_, i) => {
       const s = new Date(start + i * 15 * 60_000);
       const e = new Date(s.getTime() + 110 * 60_000);
       return `Downtown Cinema 7,Film Number ${i % 400},Auditorium ${(i % 6) + 1},${s.toISOString()},${e.toISOString()},EN,2D,PG,`;
@@ -559,6 +581,19 @@ describe("second-pass review fixes", () => {
     const t0 = performance.now();
     const m = mergeAgentReview(rules, null, [], { timezone: TZ });
     expect(performance.now() - t0).toBeLessThan(1000);
-    expect(m.rows.filter((r) => r.outcome === "add")).toHaveLength(10_000);
+    expect(m.rows.filter((r) => r.outcome === "add")).toHaveLength(5_000);
+  });
+});
+
+describe("missing optional columns (no-optional-columns.csv)", () => {
+  test("matches carry the stored format/rating/language, so applying keeps them; nothing is an update", () => {
+    const bytes = new Uint8Array(readFileSync(new URL("../../test/fixtures/csv/no-optional-columns.csv", import.meta.url)));
+    const parsed = parseShowtimeCsv(bytes, { theaterName: "Downtown Cinema 7", timezone: TZ, now: new Date("2025-03-01") });
+    const existing = existingForFile(fixtureExisting("theater-downtown"), parsed.rows.flatMap((r) => (r.value ? [r.value.startTime] : [])));
+    const m = mergeAgentReview(reconcile(parsed.rows, existing), null, existing, { timezone: TZ });
+    expect(m.counts.update).toBe(0);
+    const dune = m.rows.find((r) => r.showtimeId === "st-dt-003")!;
+    expect(dune.outcome).toBe("unchanged");
+    expect([dune.value!.format, dune.value!.rating]).toEqual(["IMAX", "PG-13"]);
   });
 });

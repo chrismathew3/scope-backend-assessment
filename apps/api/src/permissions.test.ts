@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   can,
+  membershipChangeDenied,
   type Principal,
   SUPER_ADMIN_PERMISSIONS,
   THEATER_PERMISSIONS,
@@ -45,5 +46,23 @@ describe("permission matrix", () => {
     expect(theatersWhere(mixed, "showtime.update")).toEqual(["riverside"]);
     expect(theatersWhere(mixed, "showtime.read").sort()).toEqual(["downtown", "riverside"]);
     expect(theatersWhere(none, "showtime.read")).toEqual([]);
+  });
+});
+
+describe("who may add or remove people in a theater", () => {
+  const riley: Principal = { userId: "riley", isSuperAdmin: false, theaterRoles: { downtown: "viewer" } };
+
+  test("a viewer is refused for the actual reason: they aren't an admin of that theater", () => {
+    expect(membershipChangeDenied(riley, "downtown", "viewer")).toBe("Only admins of that theater can add or remove people there");
+    expect(membershipChangeDenied(mixed, "uptown", "viewer")).toBe("Only admins of that theater can add or remove people there");
+  });
+
+  test("a theater admin may manage viewers there, but not admins", () => {
+    expect(membershipChangeDenied(mixed, "riverside", "viewer")).toBeNull();
+    expect(membershipChangeDenied(mixed, "riverside", "admin")).toBe("Only a super admin can grant or remove admin access");
+  });
+
+  test("a super admin may do either anywhere", () => {
+    expect(membershipChangeDenied(superAdmin, "uptown", "admin")).toBeNull();
   });
 });

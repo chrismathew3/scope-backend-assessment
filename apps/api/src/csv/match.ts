@@ -4,7 +4,7 @@
  * Pure functions on title keys (see titleKey in normalize.ts).
  */
 import { digitTokens, trigramSimilarity } from "./normalize";
-import type { CleanRow, ExistingShowtime, FieldDiff } from "./types";
+import type { CleanRow, ExistingShowtime, FieldDiff, OptionalField } from "./types";
 
 /** Trigram similarity at or above which two different title keys can be the same film. */
 export const FUZZY_THRESHOLD = 0.6;
@@ -16,7 +16,10 @@ export const keyOf = (titleKey: string, start: Date) => `${titleKey}|${start.get
 
 const iso = (v: string | Date) => (v instanceof Date ? v.toISOString() : v);
 
-/** Field-by-field changes from a stored showtime to a file row. Restoring an archived one is a status change. */
+/**
+ * Field-by-field changes from a stored showtime to a file row. Restoring an archived one is a status change.
+ * Fields whose column the file doesn't have are not compared: the default isn't the partner's value.
+ */
 export function computeDiffs(existing: ExistingShowtime, row: CleanRow): FieldDiff[] {
   const diffs: FieldDiff[] = [];
   if (existing.status === "archived") diffs.push({ field: "status", oldValue: "archived", newValue: "active" });
@@ -24,11 +27,22 @@ export function computeDiffs(existing: ExistingShowtime, row: CleanRow): FieldDi
     diffs.push({ field: "startTime", oldValue: existing.startTime.toISOString(), newValue: row.startTime.toISOString() });
   }
   for (const field of COMPARED_FIELDS) {
+    if (isAbsent(row, field)) continue;
     const oldValue = iso(existing[field]);
     const newValue = iso(row[field]);
     if (oldValue !== newValue) diffs.push({ field, oldValue, newValue });
   }
   return diffs;
+}
+
+const isAbsent = (row: CleanRow, field: string) => (row.absentFields as string[] | undefined)?.includes(field) ?? false;
+
+/** A matched row takes the stored value for each column the file doesn't have, so applying it keeps that value. */
+export function keepStoredForAbsent(row: CleanRow, existing: ExistingShowtime): CleanRow {
+  if (!row.absentFields?.length) return row;
+  const kept: Partial<Pick<CleanRow, OptionalField>> = {};
+  for (const f of row.absentFields) kept[f] = existing[f];
+  return { ...row, ...kept };
 }
 
 /** Fields (by name) in which two file rows differ. */

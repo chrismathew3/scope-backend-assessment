@@ -113,6 +113,13 @@ describe("normalizeShowtimeFields", () => {
     expect(out.rating).toBe("PG-13");
   });
 
+  test("strips bidi control characters from a typed title and auditorium", () => {
+    const out = normalizeShowtimeFields({ movieTitle: "\u202EWonka\u202C", auditorium: "Aud\u200F 1" });
+    expect(out.movieTitle).toBe("Wonka");
+    expect(out.auditorium).toBe("Aud 1");
+    expect(() => normalizeShowtimeFields({ movieTitle: "\u202E\u2066" })).toThrow(ShowtimeFieldError);
+  });
+
   test("leaves out fields that weren't sent", () => {
     expect(normalizeShowtimeFields({ rating: "R" })).toEqual({ rating: "R" });
   });

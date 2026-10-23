@@ -22,6 +22,13 @@ describe("cleanText", () => {
     expect(cleanText("Two\nLines\tHere\u0007")).toBe("Two Lines Here");
     expect(cleanText("Ｗｏｎｋａ")).toBe("Wonka"); // full-width (NFKC)
   });
+
+  test("strips bidirectional control characters, which can make a title display reversed", () => {
+    expect(cleanText("\u202EakNoW\u202C")).toBe("akNoW"); // RLO ... PDF
+    expect(cleanText("Wo\u2066n\u2069ka\u200E\u200F")).toBe("Wonka"); // LRI/PDI, LRM/RLM
+    expect(cleanText("\u202A\u202B\u202D\u2067\u2068Dune")).toBe("Dune");
+    expect(titleKey("\u202EWonka")).toBe(titleKey("Wonka"));
+  });
 });
 
 describe("titleKey", () => {

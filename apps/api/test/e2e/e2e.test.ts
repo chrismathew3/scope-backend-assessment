@@ -401,6 +401,8 @@ describe.skipIf(!RUN)("end to end", () => {
       ["missing.csv", "theater_name,movie_title\nDowntown Cinema 7,Wonka", /column|header/i],
       ["binary.csv", new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0, 1, 2, 3]), /csv|text|binary/i],
       ["other.csv", csv(["Riverside Multiplex,The Fall Guy,Auditorium A,2025-03-15T19:15:00Z,2025-03-15T21:21:00Z,EN,2D,PG-13,"]), /theater|Riverside/i],
+      // No valid row would archive the whole schedule, like a header-only file.
+      ["all-rejected.csv", fixture("all-rows-rejected.csv"), /None of the 5 rows can be imported.*Line 2: Unrecognized date\/time/],
     ];
     for (const [name, content, msg] of cases) {
       const r = await users.avery.upload("theater-downtown", name, content);
@@ -448,10 +450,138 @@ describe.skipIf(!RUN)("end to end", () => {
     AI_TIMEOUT,
   );
 
+  test("files over 5,000 rows are refused, so the review always shows every row apply would touch", async () => {
+    const lines = Array.from({ length: 5001 }, (_, i) => {
+      const t = new Date(Date.UTC(2025, 3, 1, 15) + i * 15 * 60_000);
+      return `Downtown Cinema 7,Film ${i},Auditorium 1,${t.toISOString()},${new Date(t.getTime() + 6_600_000).toISOString()},EN,2D,PG,`;
+    });
+    const r = await users.avery.upload("theater-downtown", "too-many.csv", csv(lines));
+    expect(r.status).toBe(400);
+    expect(r.json.message).toBe("This file has 5,001 rows; the limit is 5,000 per upload. Split it and upload the parts.");
+  });
+
   test("files over 3 MB are refused", async () => {
     const big = "x".repeat(3 * 1024 * 1024 + 10);
     const r = await users.avery.upload("theater-downtown", "huge.csv", big);
     expect([400, 413]).toContain(r.status);
+  });
+
+  /* ───────── QA fixes ───────── */
+
+  test(
+    "ISO dates with 12-hour times are read, so the drop matches instead of archiving everything",
+    async () => {
+      await reset();
+      const r = await users.avery.upload("theater-downtown", "iso-12h.csv", fixture("iso-12-hour-times.csv"));
+      expect(r.status).toBe(200);
+      expect(r.json.summary.rejectedCount).toBe(0);
+      expect(r.json.archives).toEqual([]);
+      expect(byLine(r.json)[2].startTime).toBe("2025-03-15T18:00:00.000Z"); // 11:00 AM Los Angeles
+      await users.avery.del(`/imports/${r.json.summary.id}`);
+    },
+    AI_TIMEOUT,
+  );
+
+  test(
+    "a row whose time can't be read keeps every showtime of its film off the archive list",
+    async () => {
+      await reset();
+      const file = csv([
+        "Downtown Cinema 7,Spider-Man: Homecoming,Auditorium 1,2025-03-15T18:00:00Z,2025-03-15T20:13:00Z,EN,2D,PG-13,",
+        "Downtown Cinema 7,Dune: Part Two,Auditorium 1,Saturday afternoon,2025-03-15T22:46:00Z,EN,IMAX,PG-13,",
+      ]);
+      const d = (await users.avery.upload("theater-downtown", "bad-time.csv", file)).json;
+      const archived = d.archives.map((a: any) => a.showtimeId);
+      expect(archived).not.toContain("st-dt-003");
+      expect(archived).not.toContain("st-dt-004");
+      expect(archived).toContain("st-dt-007"); // Kung Fu Panda 4 really is missing
+      await users.avery.del(`/imports/${d.summary.id}`);
+    },
+    AI_TIMEOUT,
+  );
+
+  test(
+    "a file without format/rating/language columns keeps the stored values",
+    async () => {
+      await reset();
+      const d = (await users.avery.upload("theater-downtown", "no-optional.csv", fixture("no-optional-columns.csv"))).json;
+      expect(d.summary.updateCount).toBe(0);
+      expect(d.summary.notices).toContain("No rating column: stored ratings are kept; new showtimes get NR.");
+      expect((await users.avery.post(`/imports/${d.summary.id}/apply`, {})).status).toBe(200);
+      const dune = await showtime("st-dt-003");
+      expect([dune.format, dune.rating]).toEqual(["IMAX", "PG-13"]);
+    },
+    AI_TIMEOUT,
+  );
+
+  test(
+    "after applying with everything unticked, the import says nothing was applied",
+    async () => {
+      await reset();
+      const one = csv(["Downtown Cinema 7,Wonka Two,Auditorium 3,2025-03-15T16:00:00Z,2025-03-15T17:56:00Z,EN,2D,PG,"]);
+      const d = (await users.avery.upload("theater-downtown", "untick.csv", one)).json;
+      expect(d.summary.archiveCount).toBeGreaterThan(0);
+      const decisions = {
+        rows: d.rows.filter((r: any) => r.outcome === "add" || r.outcome === "update").map((r: any) => ({ lineNumber: r.lineNumber, accepted: false })),
+        archives: d.archives.map((a: any) => ({ showtimeId: a.showtimeId, accepted: false })),
+      };
+      const applied = (await users.avery.post(`/imports/${d.summary.id}/apply`, { decisions })).json.summary;
+      expect([applied.addCount, applied.updateCount, applied.archiveCount]).toEqual([0, 0, 0]);
+      expect(applied.notices.some((n: string) => n.includes("would archive"))).toBe(false);
+      const listed = (await users.avery.get("/theaters/theater-downtown/imports")).json.find((i: any) => i.id === d.summary.id);
+      expect([listed.addCount, listed.archiveCount]).toEqual([0, 0]);
+      const active = await sql`select count(*)::int n from showtime where theater_id='theater-downtown' and status='active'`;
+      expect(active[0]!.n).toBe(5);
+    },
+    AI_TIMEOUT,
+  );
+
+  test("a tampered paging cursor is a 400; real cursors page every time sort", async () => {
+    await reset();
+    const enc = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
+    const titleCursor = (await users.sam.get("/showtimes?limit=2&sort=movieTitle")).json.nextCursor;
+    for (const [sort, cursor] of [
+      ["startTime", titleCursor],
+      ["startTime", enc(["notadate", "x"])],
+      ["movieStatus", enc(["bogus", "x"])],
+    ]) {
+      const r = await users.sam.get(`/showtimes?sort=${sort}&cursor=${cursor}`);
+      expect(r.status).toBe(400);
+      expect(r.json.message).toBe("Invalid cursor");
+    }
+    for (const sort of ["startTime", "endTime", "lastUpdated", "movieStatus"]) {
+      const seen: string[] = [];
+      let cursor = "";
+      for (let i = 0; i < 10; i++) {
+        const page = (await users.sam.get(`/showtimes?limit=4&sort=${sort}${cursor ? `&cursor=${cursor}` : ""}`)).json;
+        seen.push(...page.items.map((x: any) => x.id));
+        if (!page.nextCursor) break;
+        cursor = page.nextCursor;
+      }
+      expect(new Set(seen).size).toBe(15);
+    }
+  });
+
+  test("showtime dates outside 2000-2100 or runtimes over a day are a 400, not a 500", async () => {
+    const base = { theaterId: "theater-downtown", movieTitle: "Ancient", auditorium: "Aud 1", language: "EN", format: "2D", rating: "PG" };
+    const ancient = await users.avery.post("/showtimes", { ...base, startTime: "0001-01-01T10:00:00Z", endTime: "0001-01-01T12:00:00Z" });
+    expect(ancient.status).toBe(400);
+    expect(JSON.stringify(ancient.json)).toContain("Dates must be between 2000 and 2100");
+    const long = await users.avery.post("/showtimes", { ...base, startTime: "2025-05-01T10:00:00Z", endTime: "2025-05-03T12:00:00Z" });
+    expect(long.status).toBe(400);
+    const edit = await users.avery.patch("/showtimes/st-dt-001", { expectedVersion: 1, endTime: "2025-03-17T20:13:00Z" });
+    expect(edit.status).toBe(400);
+    expect(edit.json.message).toContain("24 hours");
+  });
+
+  test("a viewer adding someone is refused for the right reason", async () => {
+    const r = await users.riley.post("/users", {
+      name: "Nope",
+      email: `e2e-v-${Date.now()}@example.com`,
+      memberships: [{ theaterId: "theater-downtown", role: "viewer" }],
+    });
+    expect(r.status).toBe(403);
+    expect(r.json.message).toBe("Only admins of that theater can add or remove people there");
   });
 
   /* ───────── people and access management ───────── */

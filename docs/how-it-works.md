@@ -8,6 +8,10 @@ CSV → clean (code) → find candidates (code) → decide (LLM) → verify (cod
 
 **1. Clean.** The parser detects the encoding (UTF-8, UTF-16, Windows-1252) and the delimiter, maps header aliases, skips title rows, and normalizes dashes and spaces. Times without an offset are read in the theater's timezone. Rows for the wrong theater, with the end before the start, or with missing fields are rejected with a plain reason.
 
+- A rejected row that still names a film keeps that film off the archive list.
+- A file is refused if it's over 3 MB or 5,000 rows, or has no row that can be imported (otherwise it would archive the whole schedule).
+- If the file has no language, format or rating column, stored values are kept; only new showtimes get defaults.
+
 **2. Find candidates.** For each row, code finds stored showtimes it could be: same normalized title and start, a close spelling, or the same film moved by a few minutes.
 
 **3. Decide.** Gemini 3 Flash gets each row and its candidates. When the schedule is too big to inline it can call `searchSchedule`, and it answers through `submitReview` with an action (add, update, unchanged, duplicate), the matched showtime, a confidence and a one-sentence reason. Rejected rows and duplicates the rules found are never sent. Files up to 120 rows go to the agent in full. Larger files only send rows a verified match could change; exact matches and titles with no plausible stored match are settled by rules. A 5,000-row file of new titles previews in about 3 seconds, locally and on the hosted demo. No database transaction is open while the model runs.

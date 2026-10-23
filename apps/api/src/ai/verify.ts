@@ -6,7 +6,7 @@
  * against the real schedule; anything invalid falls back to the rules' answer
  * and counts as a correction. Diffs are always computed here, never by the model.
  */
-import { computeDiffs, FUZZY_THRESHOLD, sameNumbers, sameShowtime, titlesConflict } from "../csv/match";
+import { computeDiffs, FUZZY_THRESHOLD, keepStoredForAbsent, sameNumbers, sameShowtime, similarTitles, titlesConflict } from "../csv/match";
 import { titleKey, trigramSimilarity } from "../csv/normalize";
 import { columnCell } from "../csv/parse";
 import { parseTimestamp } from "../csv/time";
@@ -212,7 +212,9 @@ function setMatch(st: MergeState, row: FinalRow, s: ExistingShowtime, method: Fi
     row.partnerTitle = row.value!.movieTitle;
     row.value = { ...row.value!, movieTitle: s.movieTitle, movieTitleKey: s.movieTitleKey };
   }
-  row.diffs = computeDiffs(s, row.value!);
+  // Columns the file doesn't have keep their stored values when applied.
+  row.value = keepStoredForAbsent(row.value!, s);
+  row.diffs = computeDiffs(s, row.value);
   row.outcome = row.diffs.length > 0 || keyDiffers ? "update" : "unchanged";
 }
 
@@ -414,22 +416,40 @@ function writeExplanations(st: MergeState, timezone: string): number {
 }
 
 /**
- * Step 6. A row that failed validation but still names a showtime here (title + start)
- * protects that showtime: a malformed line is not evidence the showtime was dropped.
- * Rows for another theater protect nothing.
+ * Step 6. A row that failed validation but still names a film here protects showtimes it
+ * could refer to: a malformed line is not evidence the showtime was dropped. With a readable
+ * start it protects that one showtime (same film and start); without one, every live showtime
+ * of that film. Rows for another theater protect nothing.
  */
 function heldByRejectedRows(st: MergeState, timezone: string): Set<string> {
   const held = new Set<string>();
+  const free = (s: ExistingShowtime) => s.status !== "archived" && !st.claimed.has(s.id) && !held.has(s.id);
   for (const r of st.rows) {
     if (r.value || r.errors.some((e) => e.column === "theater_name")) continue;
     const title = columnCell(r.raw, "movie_title");
+    const key = title ? titleKey(title) : "";
+    if (!key) continue;
     const start = parseTimestamp(columnCell(r.raw, "start_time") ?? "", timezone);
-    if (!title || !start.ok) continue;
-    const wanted = { movieTitleKey: titleKey(title), startTime: start.date };
-    const hit = st.existing.find((s) => s.status !== "archived" && !st.claimed.has(s.id) && !held.has(s.id) && sameShowtime(s, wanted));
-    if (hit) {
-      held.add(hit.id);
-      r.warnings = [...r.warnings, { column: "*", message: `Refers to ${hit.movieTitle} at this time, which is left as it is.` }];
+    if (start.ok) {
+      const wanted = { movieTitleKey: key, startTime: start.date };
+      const hit = st.existing.find((s) => free(s) && sameShowtime(s, wanted));
+      if (hit) {
+        held.add(hit.id);
+        r.warnings = [...r.warnings, { column: "*", message: `Refers to ${hit.movieTitle} at this time, which is left as it is.` }];
+      }
+      continue;
+    }
+    const hits = st.existing.filter((s) => free(s) && similarTitles(key, s.movieTitleKey));
+    for (const s of hits) held.add(s.id);
+    if (hits.length) {
+      const n = hits.length;
+      r.warnings = [
+        ...r.warnings,
+        {
+          column: "*",
+          message: `Its start time can't be read, so ${n === 1 ? "the stored showtime" : `all ${n} stored showtimes`} of ${hits[0]!.movieTitle} ${n === 1 ? "is" : "are"} left as ${n === 1 ? "it is" : "they are"}.`,
+        },
+      ];
     }
   }
   return held;

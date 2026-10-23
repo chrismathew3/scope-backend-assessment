@@ -7,6 +7,7 @@
  */
 import {
   can,
+  membershipChangeDenied,
   IdInput,
   MembershipRemoveInput,
   MembershipSetInput,
@@ -123,10 +124,8 @@ function assertCanManageMembership(ctx: AuthedContext, theaterId: string, role: 
   if (!(theaterId in ctx.principal.theaterRoles)) {
     throw new TRPCError({ code: "NOT_FOUND", message: "Theater not found" });
   }
-  if (can(ctx.principal, "member.manageAll")) return;
-  if (role !== "viewer" || !can(ctx.principal, "member.manageViewers", theaterId)) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "Only a super admin can grant or remove admin access" });
-  }
+  const denied = membershipChangeDenied(ctx.principal, theaterId, role);
+  if (denied) throw new TRPCError({ code: "FORBIDDEN", message: denied });
 }
 
 export const usersRouter = router({

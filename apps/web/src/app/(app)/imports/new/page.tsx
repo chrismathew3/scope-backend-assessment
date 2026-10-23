@@ -1,6 +1,6 @@
 "use client";
 
-import { MAX_CSV_BYTES } from "@scope/shared";
+import { MAX_CSV_BYTES, MAX_CSV_ROWS } from "@scope/shared";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Loader2, Upload } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -26,7 +26,8 @@ const SAMPLES: Record<string, { file: string; about: string }[]> = {
 };
 
 const MAX_SIZE = `${MAX_CSV_BYTES / (1024 * 1024)} MB`;
-const TOO_BIG = `Files must be ${MAX_SIZE} or smaller (about 30,000 rows).`;
+const MAX_ROWS = MAX_CSV_ROWS.toLocaleString("en-US");
+const TOO_BIG = `Files must be ${MAX_SIZE} or smaller, with at most ${MAX_ROWS} rows.`;
 
 function toBase64(buffer: ArrayBuffer) {
   const bytes = new Uint8Array(buffer);
@@ -207,7 +208,7 @@ export default function NewImportPage() {
             <Upload aria-hidden className="size-5 text-ink-2" />
             <span className="mt-3 font-medium">Drop a CSV here, or choose a file</span>
             <span className="mt-1 text-[13px] text-ink-2">
-              Columns like theater, title, auditorium, start and end time. Up to {MAX_SIZE}.
+              Columns like theater, title, auditorium, start and end time. Up to {MAX_SIZE} and {MAX_ROWS} rows.
             </span>
           </button>
           {error && (

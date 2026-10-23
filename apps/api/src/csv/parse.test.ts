@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { MAX_CSV_ROWS } from "@scope/shared";
 import { CsvFileError, parseShowtimeCsv, type ParseOptions } from "./parse";
 
 const FIXTURES = join(import.meta.dir, "../../test/fixtures/csv");
@@ -26,10 +27,10 @@ function fileError(fn: () => unknown): CsvFileError {
   throw new Error("expected CsvFileError");
 }
 
-/** Parse a single data row under the standard header and return it. */
+/** Parse a single data row under the standard header and return it. A valid row follows it, since a file with none is refused. */
 function oneRow(row: string, opts: Partial<ParseOptions> = {}) {
-  const parsed = parseShowtimeCsv(bytes(`${HEADER}\n${row}\n`), { ...OPTS, ...opts });
-  expect(parsed.rows).toHaveLength(1);
+  const parsed = parseShowtimeCsv(bytes(`${HEADER}\n${row}\n${ROW}\n`), { ...OPTS, ...opts });
+  expect(parsed.rows).toHaveLength(2);
   return parsed.rows[0]!;
 }
 
@@ -43,6 +44,28 @@ describe("file level", () => {
     const e = fileError(() => parseShowtimeCsv(fixture("header-only.csv"), OPTS));
     expect(e.code).toBe("header_only");
     expect(e.message).toContain("Clear Schedule");
+  });
+
+  test("F1 a file where no row is valid is refused, naming the first problems", () => {
+    const e = fileError(() => parseShowtimeCsv(fixture("all-rows-rejected.csv"), OPTS));
+    expect(e.code).toBe("no_valid_rows");
+    expect(e.message).toContain("None of the 5 rows can be imported");
+    expect(e.message).toContain('Line 2: Unrecognized date/time "2025-03-15 11:00 PST" (start_time)');
+    expect(e.message).toContain("and 2 more");
+  });
+
+  test("F1 more than MAX_CSV_ROWS rows is refused; exactly the limit is fine", () => {
+    const lines = (n: number) => `${HEADER}\n${Array.from({ length: n }, () => ROW).join("\n")}\n`;
+    expect(parseShowtimeCsv(bytes(lines(MAX_CSV_ROWS)), OPTS).rows).toHaveLength(MAX_CSV_ROWS);
+    const e = fileError(() => parseShowtimeCsv(bytes(lines(MAX_CSV_ROWS + 1)), OPTS));
+    expect(e.code).toBe("too_many_rows");
+    expect(e.message).toBe("This file has 5,001 rows; the limit is 5,000 per upload. Split it and upload the parts.");
+  });
+
+  test("ISO dates with 12-hour times parse (iso-12-hour-times.csv)", () => {
+    const parsed = parseShowtimeCsv(fixture("iso-12-hour-times.csv"), OPTS);
+    expect(parsed.rows.every((r) => r.value && r.errors.length === 0)).toBe(true);
+    expect(parsed.rows[0]!.value!.startTime.toISOString()).toBe("2025-03-15T18:00:00.000Z"); // 11 AM Los Angeles
   });
 
   test("F2 binary and Excel files", () => {
@@ -126,13 +149,15 @@ describe("header", () => {
     const parsed = parseShowtimeCsv(fixture("reordered-extra-columns.csv"), OPTS);
     const notes = parsed.notices.join(" ");
     expect(notes).toContain("Ignored columns: Notes");
-    expect(notes).toContain('No language column; every row uses "EN"');
-    expect(notes).toContain('No format column; every row uses "2D"');
+    expect(notes).toContain("No language column: stored languages are kept; new showtimes get EN.");
+    expect(notes).toContain("No format column: stored formats are kept; new showtimes get 2D.");
     const v = parsed.rows[0]!.value!;
     expect(v.movieTitle).toBe("Wonka");
     expect(v.theaterName).toBe("downtown cinema 7"); // R4: case/space-insensitive theater match
     expect(v.language).toBe("EN");
     expect(v.format).toBe("2D");
+    expect(v.absentFields).toEqual(["language", "format"]);
+    expect(parseShowtimeCsv(bytes(`${HEADER}\n${ROW}\n`), OPTS).rows[0]!.value!.absentFields).toBeUndefined();
   });
 
   test("H3 missing required column lists what is missing and what was found", () => {
@@ -284,6 +309,19 @@ describe("row values", () => {
     expect(row.value?.endTime.toISOString()).toBe("2025-03-15T17:56:00.000Z");
     const noon = oneRow(ROW.replace("2025-03-15T16:00:00Z", "3/15/2025 12:00 PM").replace("2025-03-15T17:56:00Z", "3/15/2025 2:00 PM"));
     expect(noon.value?.startTime.toISOString()).toBe("2025-03-15T19:00:00.000Z");
+  });
+
+  test("V3 ISO date with a 12-hour clock, read in the theater timezone", () => {
+    const row = oneRow(ROW.replace("2025-03-15T16:00:00Z", "2025-03-15 9:00 AM").replace("2025-03-15T17:56:00Z", "2025-03-15 10:56:00 am"));
+    expect(row.errors).toEqual([]);
+    expect(row.value?.startTime.toISOString()).toBe("2025-03-15T16:00:00.000Z");
+    expect(row.value?.endTime.toISOString()).toBe("2025-03-15T17:56:00.000Z");
+    const pm = oneRow(ROW.replace("2025-03-15T16:00:00Z", "2025-03-15 12:30PM").replace("2025-03-15T17:56:00Z", "2025-03-15 1:13 pm"));
+    expect(pm.value?.startTime.toISOString()).toBe("2025-03-15T19:30:00.000Z");
+    expect(pm.value?.endTime.toISOString()).toBe("2025-03-15T20:13:00.000Z");
+    const midnight = oneRow(ROW.replace("2025-03-15T16:00:00Z", "2025-03-15 12:00 AM").replace("2025-03-15T17:56:00Z", "2025-03-15 2:00 AM"));
+    expect(midnight.value?.startTime.toISOString()).toBe("2025-03-15T07:00:00.000Z");
+    expect(oneRow(ROW.replace("2025-03-15T16:00:00Z", "2025-03-15 13:00 PM")).errors[0]!.message).toContain("Invalid time");
   });
 
   test("V4 unparseable, impossible and date-only values", () => {

@@ -193,9 +193,10 @@ async function runBatch(
               start: localTime(r.value.startTime, tz),
               startIso: r.value.startTime.toISOString(),
               endIso: r.value.endTime.toISOString(),
-              format: r.value.format,
-              language: r.value.language,
-              rating: r.value.rating,
+              // Null when the file has no such column: the default isn't the partner's value.
+              format: r.value.absentFields?.includes("format") ? null : r.value.format,
+              language: r.value.absentFields?.includes("language") ? null : r.value.language,
+              rating: r.value.absentFields?.includes("rating") ? null : r.value.rating,
               rulesGuess: { action: r.outcome, showtimeId: r.showtimeId, basis: RULE_BASIS[r.matchMethod ?? ""] ?? null },
               candidates: candidatesFor(r.value, existing, tz),
             },

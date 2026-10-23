@@ -9,6 +9,7 @@
  */
 import {
   ADMIN_ONLY_SORTS,
+  MOVIE_STATUSES,
   type MovieStatus,
   type Principal,
   type ShowtimeAdminRow,
@@ -94,14 +95,41 @@ const sortColumns: Record<ShowtimeSort, SQL | AnyPgColumn> = {
 };
 const isTimeSort = (s: ShowtimeSort) => s === "startTime" || s === "endTime" || s === "lastUpdated";
 
-function encodeCursor(value: unknown, id: string) {
+export function encodeCursor(value: unknown, id: string) {
   const v = value instanceof Date ? value.toISOString() : String(value);
   return Buffer.from(JSON.stringify([v, id])).toString("base64url");
 }
-function decodeCursor(cursor: string): [string, string] {
+/**
+ * A timestamp as Postgres prints it ("2025-03-15 12:00:00.123456-04") or as ISO. Checked by hand rather
+ * than with Date.parse, which doesn't read Postgres's format; the string is passed on as is so microseconds survive.
+ */
+const CURSOR_TIME = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(?:Z|[+-](\d{2})(?::?\d{2})?)$/;
+
+function validCursorTime(v: string): boolean {
+  const m = CURSOR_TIME.exec(v);
+  if (!m) return false;
+  const [year, month, day, hour, minute, second, offset] = m.slice(1).map((x) => Number(x ?? 0));
+  const daysInMonth = new Date(Date.UTC(year!, month!, 0)).getUTCDate();
+  return month! >= 1 && month! <= 12 && day! >= 1 && day! <= daysInMonth && hour! <= 23 && minute! <= 59 && second! <= 59 && offset! <= 15;
+}
+
+/** Is `v` a value the sort column can hold? A cursor the client edited must be a 400, not a database cast error. */
+function validCursorValue(sort: ShowtimeSort, v: string): boolean {
+  if (isTimeSort(sort)) return validCursorTime(v);
+  if (sort === "movieStatus") return (MOVIE_STATUSES as readonly string[]).includes(v);
+  return true; // text sorts take any string
+}
+
+/** Reads a paging cursor for `sort`. Throws a 400 for anything this API didn't write for that sort. */
+export function decodeCursor(cursor: string, sort: ShowtimeSort): [string, string] {
   try {
     const parsed: unknown = JSON.parse(Buffer.from(cursor, "base64url").toString());
-    if (Array.isArray(parsed) && parsed.length === 2 && parsed.every((x) => typeof x === "string")) {
+    if (
+      Array.isArray(parsed) &&
+      parsed.length === 2 &&
+      parsed.every((x) => typeof x === "string") &&
+      validCursorValue(sort, parsed[0] as string)
+    ) {
       return parsed as [string, string];
     }
   } catch {
@@ -150,7 +178,7 @@ export async function listShowtimes(db: Queryable, p: Principal, input: ListInpu
 
   let cursorCond: SQL | undefined;
   if (input.cursor) {
-    const [v, id] = decodeCursor(input.cursor);
+    const [v, id] = decodeCursor(input.cursor, input.sort);
     const value = isTimeSort(input.sort)
       ? sql`${v}::timestamptz`
       : input.sort === "movieStatus"

@@ -161,12 +161,19 @@ export const ShowtimeFacets = z.object({
 const requiredText = (label: string, max: number) =>
   z.string().trim().min(1, `${label} is required`).max(max, `${label} is longer than ${max} characters`);
 
+/** Showtimes are dated within these years (inclusive); anything outside is a typo, not a booking. */
+export const SHOWTIME_YEARS = { min: 2000, max: 2100 } as const;
+const showtimeTime = isoDate.refine((v) => {
+  const year = new Date(v).getUTCFullYear();
+  return year >= SHOWTIME_YEARS.min && year <= SHOWTIME_YEARS.max;
+}, `Dates must be between ${SHOWTIME_YEARS.min} and ${SHOWTIME_YEARS.max}`);
+
 /** Fields an admin can write on a showtime. Times are ISO 8601 with an offset (or Z). */
 export const showtimeFields = {
   movieTitle: requiredText("Title", 200),
   auditorium: requiredText("Auditorium", 100),
-  startTime: isoDate,
-  endTime: isoDate,
+  startTime: showtimeTime,
+  endTime: showtimeTime,
   language: requiredText("Language", 40),
   format: requiredText("Format", 40),
   rating: requiredText("Rating", 20),
@@ -177,6 +184,13 @@ export const END_BEFORE_START = "End time must be after start time";
 export const endsAfterStart = (v: { startTime?: string; endTime?: string }) =>
   !v.startTime || !v.endTime || new Date(v.endTime).getTime() > new Date(v.startTime).getTime();
 
+/** Longest a showtime may run. Past midnight is fine; a day or more is a wrong date. */
+export const MAX_RUNTIME_MS = 24 * 60 * 60 * 1000;
+export const RUNTIME_TOO_LONG = "A showtime can't run longer than 24 hours";
+/** True unless both times are given and the showtime runs longer than MAX_RUNTIME_MS. */
+export const runtimeWithinLimit = (v: { startTime?: string; endTime?: string }) =>
+  !v.startTime || !v.endTime || new Date(v.endTime).getTime() - new Date(v.startTime).getTime() <= MAX_RUNTIME_MS;
+
 export const ShowtimeCreateInput = z
   .object({
     theaterId: id,
@@ -184,7 +198,8 @@ export const ShowtimeCreateInput = z
     movieStatus: MovieStatus.default("needs-review"),
     status: ShowtimeStatus.default("active"),
   })
-  .refine(endsAfterStart, { message: END_BEFORE_START, path: ["endTime"] });
+  .refine(endsAfterStart, { message: END_BEFORE_START, path: ["endTime"] })
+  .refine(runtimeWithinLimit, { message: RUNTIME_TOO_LONG, path: ["endTime"] });
 export type ShowtimeCreateInput = z.input<typeof ShowtimeCreateInput>;
 
 const EDITABLE_KEYS = [
@@ -214,7 +229,8 @@ export const ShowtimeUpdateInput = z
     status: ShowtimeStatus.optional(),
   })
   .refine((v) => EDITABLE_KEYS.some((k) => v[k] !== undefined), "Nothing to update")
-  .refine(endsAfterStart, { message: END_BEFORE_START, path: ["endTime"] });
+  .refine(endsAfterStart, { message: END_BEFORE_START, path: ["endTime"] })
+  .refine(runtimeWithinLimit, { message: RUNTIME_TOO_LONG, path: ["endTime"] });
 export type ShowtimeUpdateInput = z.input<typeof ShowtimeUpdateInput>;
 
 export const ArchiveAllInput = z.object({ theaterId: id });
@@ -224,6 +240,8 @@ export const ArchiveAllOutput = z.object({ archived: z.number().int() });
 
 /** Vercel caps request bodies at 4.5 MB; base64 adds a third, so 3 MB of CSV is the safe ceiling. */
 export const MAX_CSV_BYTES = 3 * 1024 * 1024;
+/** Most showtime rows one upload may have. The review shows every row, and apply applies exactly what was shown. */
+export const MAX_CSV_ROWS = 5000;
 
 export const ImportCreateInput = z.object({
   theaterId: id,

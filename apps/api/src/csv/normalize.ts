@@ -9,6 +9,8 @@ export interface Normalized {
 }
 
 const ZERO_WIDTH = /[​-‍⁠﻿­]/g;
+// Bidirectional controls (LRE/RLE/PDF/LRO/RLO, LRI/RLI/FSI/PDI, LRM/RLM): invisible, and can make text display reversed.
+const BIDI = /[\u202A-\u202E\u2066-\u2069\u200E\u200F]/g;
 // Control characters. Tabs and newlines inside a cell become spaces instead.
 const CONTROL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 const SPACES = /[\t\n\r    - 　]/g;
@@ -21,6 +23,7 @@ export function cleanText(input: string): string {
   return input
     .normalize("NFKC")
     .replace(ZERO_WIDTH, "")
+    .replace(BIDI, "")
     .replace(SPACES, " ")
     .replace(CONTROL, "")
     .replace(DASHES, "-")

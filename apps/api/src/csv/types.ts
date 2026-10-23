@@ -9,6 +9,9 @@ export interface FieldDiff {
   newValue: string;
 }
 
+/** Optional columns a file may leave out. Their values then come from defaults (adds) or the stored showtime (matches). */
+export type OptionalField = "language" | "format" | "rating";
+
 /** One cleaned, validated CSV row. */
 export interface CleanRow {
   theaterName: string;
@@ -22,6 +25,8 @@ export interface CleanRow {
   format: string;
   rating: string;
   lastUpdated: Date | null;
+  /** Optional columns the file doesn't have. These fields hold defaults and are never diffed. */
+  absentFields?: OptionalField[];
 }
 
 export interface ParsedRow {

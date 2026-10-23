@@ -241,8 +241,37 @@ describe("matching rules", () => {
   });
 
   test("rejected rows never match or archive-protect anything", () => {
-    const r = run(["Downtown Cinema 7,Kung Fu Panda 4,Auditorium 3,2025-03-16T17:30:00Z,not a time,EN,2D,PG,"]);
+    const r = run([
+      "Downtown Cinema 7,Kung Fu Panda 4,Auditorium 3,2025-03-16T17:30:00Z,not a time,EN,2D,PG,",
+      "Downtown Cinema 7,Wonka,Auditorium 3,2025-03-15T16:00:00Z,2025-03-15T17:56:00Z,EN,2D,PG,", // a file needs one valid row
+    ]);
     expect(r.rows[0]!.outcome).toBe("rejected");
     expect(r.archives.map((a) => a.id)).toContain("st-dt-007");
+  });
+});
+
+describe("no-optional-columns.csv: a file without format, rating or language columns", () => {
+  const bytes = new Uint8Array(readFileSync(join(import.meta.dir, "../../test/fixtures/csv/no-optional-columns.csv")));
+  const parsed = parseShowtimeCsv(bytes, OPTS);
+  const result = reconcile(parsed.rows, DOWNTOWN);
+
+  test("stored values are kept: same times and auditoriums are unchanged, not IMAX -> 2D or PG-13 -> NR", () => {
+    expect(result.rows.map((r) => r.outcome)).toEqual(["unchanged", "unchanged", "unchanged", "unchanged", "unchanged"]);
+    expect(result.rows.every((r) => r.diffs.length === 0)).toBe(true);
+    expect(parsed.notices).toContain("No rating column: stored ratings are kept; new showtimes get NR.");
+  });
+
+  test("a real change in a column the file does have is still an update", () => {
+    const text = new TextDecoder().decode(bytes).replace("Downtown Cinema 7,Auditorium 2", "Downtown Cinema 7,Aud 9");
+    const r = reconcile(parseShowtimeCsv(new TextEncoder().encode(text), OPTS).rows, DOWNTOWN);
+    expect(r.rows[1]!.diffs).toEqual([{ field: "auditorium", oldValue: "Auditorium 2", newValue: "Aud 9" }]);
+  });
+
+  test("adds still get the defaults", () => {
+    const text = `${new TextDecoder().decode(bytes).trimEnd()}\n2025-03-20T18:00:00Z,Wonka,Downtown Cinema 7,Auditorium 3,2025-03-20T20:00:00Z,,\n`;
+    const r = reconcile(parseShowtimeCsv(new TextEncoder().encode(text), OPTS).rows, DOWNTOWN);
+    const add = r.rows.at(-1)!;
+    expect(add.outcome).toBe("add");
+    expect([add.value!.format, add.value!.rating, add.value!.language]).toEqual(["2D", "NR", "EN"]);
   });
 });

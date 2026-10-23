@@ -7,7 +7,14 @@
  * database side.
  */
 import { createHash } from "node:crypto";
-import { type AgentRun, type ImportDetail, type ImportSummary, isLargeArchive } from "@scope/shared";
+import {
+  type AgentRun,
+  appliedNotices,
+  type ImportDetail,
+  type ImportSummary,
+  isLargeArchive,
+  largeArchiveNotice,
+} from "@scope/shared";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { runReconciliationAgent } from "../ai/agent";
@@ -29,7 +36,6 @@ import { type AuthedContext, type AuthedContextWithoutTx, requireTheater } from 
 import { audit } from "./audit";
 
 const PREVIEW_TTL_MS = 30 * 60 * 1000;
-const DETAIL_ROW_CAP = 5000;
 const CHUNK = 1000;
 
 function chunks<T>(items: T[], size = CHUNK): T[][] {
@@ -190,9 +196,7 @@ export async function createImport(
     notices.push(`This exact file was already applied on ${sameFile.appliedAt.toISOString().slice(0, 10)}.`);
   }
   if (isLargeArchive(merged.counts.archive, activeBefore)) {
-    notices.push(
-      `This drop would archive ${merged.counts.archive} of ${activeBefore} showtimes in the schedule. You'll be asked to confirm.`,
-    );
+    notices.push(largeArchiveNotice(merged.counts.archive, activeBefore));
   }
 
   const archiveProposals: ArchiveProposal[] = merged.archives.map((a) => ({
@@ -317,9 +321,9 @@ export async function getImportDetail(ctx: AuthedContext, id: string): Promise<I
     .select()
     .from(importRows)
     .where(eq(importRows.importId, id))
-    .orderBy(asc(importRows.lineNumber))
-    .limit(DETAIL_ROW_CAP);
-  const proposals = row.i.archiveProposals.slice(0, DETAIL_ROW_CAP);
+    .orderBy(asc(importRows.lineNumber));
+  // Everything shown is everything apply touches: rows are capped at upload (MAX_CSV_ROWS), not here.
+  const proposals = row.i.archiveProposals;
   const archived = proposals.length
     ? await ctx.tx
         .select({
@@ -485,6 +489,15 @@ export async function applyImport(
     });
   }
 
+  const changes = allRows.filter(
+    (r) =>
+      (r.outcome === "update" && !rejectedLineSet.has(r.lineNumber) && (rowChoice.get(r.lineNumber) ?? r.accepted)) ||
+      r.outcome === "unchanged",
+  );
+  const adds = allRows.filter(
+    (r) => r.outcome === "add" && r.normalized && !rejectedLineSet.has(r.lineNumber) && (rowChoice.get(r.lineNumber) ?? r.accepted),
+  );
+
   const now = new Date();
   try {
     // 2. Archive first, so moved, renamed or added rows never collide with rows on their way out.
@@ -496,11 +509,6 @@ export async function applyImport(
     }
 
     // 3. Approved updates (incl. moved and restored showtimes) and unchanged rows, set-based.
-    const changes = allRows.filter(
-      (r) =>
-        (r.outcome === "update" && !rejectedLineSet.has(r.lineNumber) && (rowChoice.get(r.lineNumber) ?? r.accepted)) ||
-        r.outcome === "unchanged",
-    );
     for (const part of chunks(changes.filter((r) => r.showtimeId && r.normalized))) {
       const payload = part.map((r) => ({
         id: r.showtimeId,
@@ -535,9 +543,6 @@ export async function applyImport(
     }
 
     // 4. Approved adds. New films start as needs-review; admins approve them.
-    const adds = allRows.filter(
-      (r) => r.outcome === "add" && r.normalized && !rejectedLineSet.has(r.lineNumber) && (rowChoice.get(r.lineNumber) ?? r.accepted),
-    );
     for (const part of chunks(adds)) {
       await tx.insert(showtimes).values(
         part.map((r) => {
@@ -570,9 +575,22 @@ export async function applyImport(
     .update(theaters)
     .set({ scheduleVersion: sql`${theaters.scheduleVersion} + 1` })
     .where(eq(theaters.id, theaterId));
+  // From here on the import's counts say what was applied, not what was proposed (the rows keep each proposal
+  // and the reviewer's choice). The preview's "would archive" warning is no longer true either.
+  const appliedUpdates = changes.filter((r) => r.outcome === "update").length;
+  const notices = appliedNotices(imp.notices, acceptedArchives.length, imp.activeBefore);
   await tx
     .update(imports)
-    .set({ status: "applied", appliedAt: now, appliedBy: ctx.user.id, archiveProposals: proposals })
+    .set({
+      status: "applied",
+      appliedAt: now,
+      appliedBy: ctx.user.id,
+      archiveProposals: proposals,
+      addCount: adds.length,
+      updateCount: appliedUpdates,
+      archiveCount: acceptedArchives.length,
+      notices,
+    })
     .where(eq(imports.id, id));
 
   const approved = toggleable.length - rejectLines.length;

@@ -77,8 +77,11 @@ export default function ImportsPage() {
                       {imp.filename}
                     </p>
                     <p className="text-[13px] text-ink-2">
-                      {plural(changes, "proposed change")}, {plural(imp.totalRows, "row")} · {imp.uploadedBy},{" "}
-                      {relativeTime(imp.createdAt)}
+                      {/* Once applied, the counts are what was applied, not what was proposed. */}
+                      {imp.status === "applied"
+                        ? `${plural(changes, "change")} applied`
+                        : plural(changes, "proposed change")}
+                      , {plural(imp.totalRows, "row")} · {imp.uploadedBy}, {relativeTime(imp.createdAt)}
                       {imp.agent.status !== "ok" ? " · rules only" : ""}
                     </p>
                   </div>

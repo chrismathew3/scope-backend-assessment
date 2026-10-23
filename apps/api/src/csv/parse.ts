@@ -4,6 +4,7 @@
  * File-level problems throw CsvFileError (the whole upload is refused).
  * Row-level problems are collected per row so one bad line never blocks the rest.
  */
+import { MAX_CSV_ROWS } from "@scope/shared";
 import { parse as parseCsv } from "csv-parse/sync";
 import {
   auditoriumKey,
@@ -15,7 +16,7 @@ import {
   type Normalized,
 } from "./normalize";
 import { parseTimestamp } from "./time";
-import type { CleanRow, ParsedFile, ParsedRow, RowIssue } from "./types";
+import type { CleanRow, OptionalField, ParsedFile, ParsedRow, RowIssue } from "./types";
 
 export class CsvFileError extends Error {
   constructor(
@@ -24,6 +25,8 @@ export class CsvFileError extends Error {
       | "not_csv"
       | "unbalanced_quotes"
       | "header_only"
+      | "no_valid_rows"
+      | "too_many_rows"
       | "missing_columns"
       | "duplicate_header"
       | "empty_header"
@@ -116,6 +119,7 @@ export function columnCell(raw: Record<string, string>, col: Column): string | u
 
 /** Defaults used when an optional column is missing from the file entirely. */
 const OPTIONAL_DEFAULTS = { language: "EN", format: "2D", rating: "NR" } as const;
+const OPTIONAL_FIELDS: OptionalField[] = ["language", "format", "rating"];
 
 const MAX_CELL = 300;
 /** Cells starting with these run as formulas when a spreadsheet opens an export. Title and auditorium are text, so "-" is safe to flag. */
@@ -285,9 +289,9 @@ export function parseShowtimeCsv(bytes: Uint8Array, opts: ParseOptions): ParsedF
     const col = headerToColumn(h)!;
     notices.push(`Ignored the "${h}" column: "${headers[columnIndex.get(col)!]}" is used for ${col}.`);
   }
-  for (const col of ["language", "format", "rating"] as const) {
+  for (const col of OPTIONAL_FIELDS) {
     if (!columnIndex.has(col)) {
-      notices.push(`No ${col} column; every row uses "${OPTIONAL_DEFAULTS[col]}".`);
+      notices.push(`No ${col} column: stored ${col}s are kept; new showtimes get ${OPTIONAL_DEFAULTS[col]}.`);
     }
   }
 
@@ -296,6 +300,14 @@ export function parseShowtimeCsv(bytes: Uint8Array, opts: ParseOptions): ParsedF
     throw new CsvFileError(
       "header_only",
       "The file has a header but no showtimes. Importing it would archive the whole schedule; use Clear Schedule if that's what you want.",
+    );
+  }
+
+  // One limit for what's reviewed and what's applied: every row is shown, so every row is applied.
+  if (dataRows.length > MAX_CSV_ROWS) {
+    throw new CsvFileError(
+      "too_many_rows",
+      `This file has ${dataRows.length.toLocaleString("en-US")} rows; the limit is ${MAX_CSV_ROWS.toLocaleString("en-US")} per upload. Split it and upload the parts.`,
     );
   }
 
@@ -312,7 +324,26 @@ export function parseShowtimeCsv(bytes: Uint8Array, opts: ParseOptions): ParsedF
     );
   }
 
+  // A file with no usable row would archive the whole schedule, like a header-only file.
+  if (rows.every((r) => !r.value)) throw noValidRows(rows);
+
   return { notices, headerLine: headerRecord.line, rows };
+}
+
+/** The refusal for a file where every row was rejected, naming the first few problems. */
+function noValidRows(rows: ParsedRow[]): CsvFileError {
+  const SHOWN = 3;
+  const reasons = rows.slice(0, SHOWN).map((r) => {
+    const e = r.errors[0]!;
+    const where = e.column === "*" ? "" : ` (${e.column})`;
+    return `line ${r.lineNumber}: ${e.message.replace(/\.$/, "")}${where}`;
+  });
+  const more = rows.length > SHOWN ? `; and ${rows.length - SHOWN} more` : "";
+  const n = rows.length;
+  return new CsvFileError(
+    "no_valid_rows",
+    `None of the ${n === 1 ? "file's 1 row" : `${n} rows`} can be imported, so nothing was changed. ${reasons.join("; ").replace(/^l/, "L")}${more}.`,
+  );
 }
 
 function parseRow(
@@ -453,6 +484,8 @@ function parseRow(
       rating,
       lastUpdated,
     };
+    const absentFields = OPTIONAL_FIELDS.filter((f) => !columnIndex.has(f));
+    if (absentFields.length) value.absentFields = absentFields;
   }
 
   return { lineNumber: record.line, raw, value, errors, warnings };

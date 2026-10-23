@@ -69,3 +69,14 @@ export function can(
 export function theatersWhere(p: Principal, permission: TheaterPermission): string[] {
   return Object.keys(p.theaterRoles).filter((id) => can(p, permission, id));
 }
+
+/**
+ * Why the principal may not grant or remove `role` in this theater, or null if they may.
+ * Admins manage viewers in their own theaters; only a super admin manages admins.
+ */
+export function membershipChangeDenied(p: Principal, theaterId: string, role: TheaterRole): string | null {
+  if (can(p, "member.manageAll")) return null;
+  if (!can(p, "member.manageViewers", theaterId)) return "Only admins of that theater can add or remove people there";
+  if (role !== "viewer") return "Only a super admin can grant or remove admin access";
+  return null;
+}

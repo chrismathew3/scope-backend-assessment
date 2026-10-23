@@ -39,9 +39,19 @@ function validParts(p: Parts): boolean {
 const ISO_WITH_ZONE =
   /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?\s*(Z|[+-]\d{2}:?\d{2})$/i;
 const ISO_NAIVE = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{1,2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?$/;
+// ISO date with a 12-hour clock: "2025-03-15 11:00 AM".
+const ISO_12H = /^(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)$/i;
 // US style: month/day/year. Partner feeds in this domain are US theaters.
 const US = /^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?$/i;
 const DATE_ONLY = /^(\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4})$/;
+
+/** 12-hour clock to 24-hour: 12 AM is 0, 1 PM is 13. Null when the hour isn't 1-12. */
+function to24h(hour: number, meridiem: string): number | null {
+  if (hour < 1 || hour > 12) return null;
+  const pm = meridiem.toLowerCase() === "pm";
+  if (hour === 12) return pm ? 12 : 0;
+  return pm ? hour + 12 : hour;
+}
 
 /** Parses a partner timestamp. `timeZone` is used only when the value carries no offset. */
 export function parseTimestamp(value: string, timeZone: string): TimeParse {
@@ -80,15 +90,27 @@ export function parseTimestamp(value: string, timeZone: string): TimeParse {
     return zonedTimeToUtc(parts, timeZone);
   }
 
+  m = ISO_12H.exec(v);
+  if (m) {
+    const hour = to24h(+m[4]!, m[7]!);
+    if (hour === null) return { ok: false, error: `Invalid time "${v}"` };
+    const parts: Parts = {
+      year: +m[1]!,
+      month: +m[2]!,
+      day: +m[3]!,
+      hour,
+      minute: +m[5]!,
+      second: m[6] ? +m[6] : 0,
+    };
+    if (!validParts(parts)) return { ok: false, error: `Invalid date "${v}"` };
+    return zonedTimeToUtc(parts, timeZone);
+  }
+
   m = US.exec(v);
   if (m) {
-    let hour = +m[4]!;
-    const meridiem = m[7]?.toLowerCase();
-    if (meridiem) {
-      if (hour < 1 || hour > 12) return { ok: false, error: `Invalid time "${v}"` };
-      if (meridiem === "am" && hour === 12) hour = 0;
-      if (meridiem === "pm" && hour !== 12) hour += 12;
-    }
+    let hour: number | null = +m[4]!;
+    if (m[7]) hour = to24h(hour, m[7]);
+    if (hour === null) return { ok: false, error: `Invalid time "${v}"` };
     const parts: Parts = {
       year: +m[3]!,
       month: +m[1]!,

@@ -3,6 +3,8 @@ import {
   ArchiveAllOutput,
   IdInput,
   END_BEFORE_START,
+  MAX_RUNTIME_MS,
+  RUNTIME_TOO_LONG,
   ShowtimeAdminRow,
   ShowtimeCreateInput,
   ShowtimeFacets,
@@ -185,6 +187,8 @@ export const showtimesRouter = router({
       const start = patch.startTime ?? current.s.startTime;
       const end = patch.endTime ?? current.s.endTime;
       if (end.getTime() <= start.getTime()) throw new TRPCError({ code: "BAD_REQUEST", message: END_BEFORE_START });
+      // Checked on the merged times too: a patch may move only one end.
+      if (end.getTime() - start.getTime() > MAX_RUNTIME_MS) throw new TRPCError({ code: "BAD_REQUEST", message: RUNTIME_TOO_LONG });
 
       const { before, after, changed } = diffShowtime(current.s, patch);
       // Nothing actually differs: no write, no version bump, no audit noise.
