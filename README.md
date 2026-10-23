@@ -36,6 +36,8 @@ Tests: `bun run test` (unit) and `bun run --filter @scope/api test:e2e` (end to 
 
 **Search holds up at 500,000 rows.** Title search matches against a small catalog of distinct titles first, then looks up showtimes by index. On 500k rows, paging, sorts and filters take 2–13 ms and title search 30–50 ms; sorting by theater name is the slow one at up to 240 ms. Numbers and method: [docs/search-at-scale.md](docs/search-at-scale.md).
 
+**Vercel AI Gateway instead of a raw Gemini key.** The email suggested Gemini's free API. I call Gemini 3 Flash through the AI Gateway because it's what I normally use and it was simpler: on Vercel it authenticates with the project's own token, so there's no API key to store, and switching models is a one-line change. A plain `GEMINI_API_KEY` still works for running it locally.
+
 **TypeScript instead of the FastAPI stub.** One set of Zod schemas validates the API, the forms and the OpenAPI spec. Next.js 15 (`apps/web`), Hono + tRPC + Drizzle on Postgres (`apps/api`), shared schemas and permissions (`packages/shared`).
 
 **A role picker instead of a login form.** The brief doesn't need auth, so you pick a role in one click. The sessions behind it are real because the site is public.
